@@ -1,5 +1,6 @@
 #include "renderer/renderer.h"
 #include "core/application.h"
+#include "core/asset_paths.h"
 #include "core/window.h"
 #include "world/block.h"
 #include "core/constants.h"
@@ -52,11 +53,11 @@ namespace SymoCraft{
             line_batch.SetPrimitiveType(GL_LINES);
             line_batch.SetBatchSize(100);
             // Initialize shaders
-            block_shader.CompileAndLink("../assets/shaders/vs_BlockShader.glsl",
-                                        "../assets/shaders/fs_BlockShader.glsl");
+            block_shader.CompileAndLink(Assets::Resolve("shaders/vs_BlockShader.glsl").string(),
+                                        Assets::Resolve("shaders/fs_BlockShader.glsl").string());
 
-            line3D_shader.CompileAndLink("../assets/shaders/vs_FrameShader.glsl",
-                                         "../assets/shaders/fs_FrameShader.glsl");
+            line3D_shader.CompileAndLink(Assets::Resolve("shaders/vs_FrameShader.glsl").string(),
+                                         Assets::Resolve("shaders/fs_FrameShader.glsl").string());
 
             // Initialize batches
             chunk_batch.Init({
@@ -68,7 +69,7 @@ namespace SymoCraft{
                                     {0, 3,   GL_INT, offsetof(BlockVertex3D, pos_coord)}});
 
 
-            LoadBlocks("../assets/configs/blockFormats.yaml");
+            LoadBlocks(Assets::Resolve("configs/blockFormats.yaml").string());
         }
 
         void Free() {
@@ -87,10 +88,10 @@ namespace SymoCraft{
             block_shader.Destroy();
             line3D_shader.Destroy();
 
-            block_shader.CompileAndLink("assets/shaders/vs_BlockShader.glsl",
-                                        "assets/shaders/fs_BlockShader.glsl");
-            line3D_shader.CompileAndLink("../assets/shaders/vs_FrameShader.glsl",
-                                         "../assets/shaders/fs_FrameShader.glsl");
+            block_shader.CompileAndLink(Assets::Resolve("shaders/vs_BlockShader.glsl").string(),
+                                        Assets::Resolve("shaders/fs_BlockShader.glsl").string());
+            line3D_shader.CompileAndLink(Assets::Resolve("shaders/vs_FrameShader.glsl").string(),
+                                         Assets::Resolve("shaders/fs_FrameShader.glsl").string());
         }
 
         void DrawBatches3D() {

@@ -1,57 +1,131 @@
 cmake_minimum_required(VERSION 3.22)
-project(SymoCraft)
+project(SymoCraft VERSION 0.1.0 LANGUAGES C CXX)
 
-set(CMAKE_CXX_STANDARD 20)
-set(CMAKE_CXX_STANDARD_REQUIRED True)
+if(NOT WIN32)
+    message(FATAL_ERROR "SymoCraft currently supports Windows x64 only.")
+endif()
+if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "MSVC" OR NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")
+    message(FATAL_ERROR "SymoCraft requires the MSVC C and C++ toolchains. Select the Symocraft MSVC toolchain in CLion or run from an x64 Visual Studio developer environment.")
+endif()
+if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
+    message(FATAL_ERROR "SymoCraft requires a 64-bit MSVC toolchain. Select the x64 target architecture.")
+endif()
+if(DEFINED MSVC_CXX_ARCHITECTURE_ID AND NOT MSVC_CXX_ARCHITECTURE_ID STREQUAL "x64")
+    message(FATAL_ERROR "SymoCraft requires an x64 target, not ${MSVC_CXX_ARCHITECTURE_ID}.")
+endif()
 
+include(CTest)
+include(cmake/ValidateMsvcEnvironment.cmake)
+include(cmake/StageAssets.cmake)
 
-set(MemoryAllocator include/MemoryAllocator/AmoBase.cpp)
+set(BUILD_SHARED_LIBS OFF)
+set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "Build GLFW examples" FORCE)
+set(GLFW_BUILD_TESTS OFF CACHE BOOL "Build GLFW tests" FORCE)
+set(GLFW_BUILD_DOCS OFF CACHE BOOL "Build GLFW documentation" FORCE)
+set(GLFW_INSTALL OFF CACHE BOOL "Install GLFW" FORCE)
+add_subdirectory(vendor/glfw EXCLUDE_FROM_ALL)
 
-set(Core src/core/global_thread_pool.cpp
-        src/core/window.cpp
-        src/core/application.cpp)
+add_library(glm INTERFACE)
+add_library(glm::glm ALIAS glm)
+target_include_directories(glm SYSTEM INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/vendor")
 
-set(ECS src/core/ECS/internal.cpp
-        src/core/ECS/registry.cpp
-        src/core/ECS/Systems/transform_system.cpp
-        src/core/ECS/Systems/physics_system.cpp
-        src/core/ECS/Systems/character_system.cpp
-        )
+add_library(symocraft_vendor_headers INTERFACE)
+target_include_directories(symocraft_vendor_headers SYSTEM INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/vendor")
 
-file(GLOB SOURCE_FILE
-        "vendor/yaml-cpp/src/*.cpp"
-        "vendor/yaml-cpp/src/*.h"
-        "include/renderer/batch.hpp"
-        "src/renderer/*.cpp"
-        "src/world/*.cpp"
-        "src/camera/camera.cpp"
-        "src/input/*.cpp"
-        "src/playercontroller/*.cpp"
-        "src/event/*.cpp")
+add_library(symocraft_glad STATIC vendor/glad/glad.c)
+target_include_directories(symocraft_glad SYSTEM PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/vendor")
+target_compile_options(symocraft_glad PRIVATE /utf-8)
 
+add_library(symocraft_yaml STATIC
+    vendor/yaml-cpp/src/binary.cpp
+    vendor/yaml-cpp/src/convert.cpp
+    vendor/yaml-cpp/src/depthguard.cpp
+    vendor/yaml-cpp/src/directives.cpp
+    vendor/yaml-cpp/src/emit.cpp
+    vendor/yaml-cpp/src/emitfromevents.cpp
+    vendor/yaml-cpp/src/emitter.cpp
+    vendor/yaml-cpp/src/emitterstate.cpp
+    vendor/yaml-cpp/src/emitterutils.cpp
+    vendor/yaml-cpp/src/exceptions.cpp
+    vendor/yaml-cpp/src/exp.cpp
+    vendor/yaml-cpp/src/memory.cpp
+    vendor/yaml-cpp/src/node.cpp
+    vendor/yaml-cpp/src/node_data.cpp
+    vendor/yaml-cpp/src/nodebuilder.cpp
+    vendor/yaml-cpp/src/nodeevents.cpp
+    vendor/yaml-cpp/src/null.cpp
+    vendor/yaml-cpp/src/ostream_wrapper.cpp
+    vendor/yaml-cpp/src/parse.cpp
+    vendor/yaml-cpp/src/parser.cpp
+    vendor/yaml-cpp/src/regex_yaml.cpp
+    vendor/yaml-cpp/src/scanner.cpp
+    vendor/yaml-cpp/src/scanscalar.cpp
+    vendor/yaml-cpp/src/scantag.cpp
+    vendor/yaml-cpp/src/scantoken.cpp
+    vendor/yaml-cpp/src/simplekey.cpp
+    vendor/yaml-cpp/src/singledocparser.cpp
+    vendor/yaml-cpp/src/stream.cpp
+    vendor/yaml-cpp/src/tag.cpp
+)
+target_include_directories(symocraft_yaml SYSTEM PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/vendor")
+target_compile_features(symocraft_yaml PUBLIC cxx_std_20)
+target_compile_options(symocraft_yaml PRIVATE /utf-8)
+set_target_properties(symocraft_yaml PROPERTIES CXX_EXTENSIONS OFF)
 
-link_directories(${PROJECT_SOURCE_DIR}/lib/irrKlang)
+add_library(symocraft_assets STATIC src/core/asset_paths.cpp)
+target_include_directories(symocraft_assets PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
+target_compile_features(symocraft_assets PUBLIC cxx_std_20)
+target_compile_options(symocraft_assets PRIVATE /utf-8)
+set_target_properties(symocraft_assets PROPERTIES CXX_EXTENSIONS OFF)
 
-include_directories(vendor include vendor/glfw/include/)
+add_executable(SymoCraft
+    src/main.cpp
+    include/MemoryAllocator/AmoBase.cpp
+    src/camera/Camera.cpp
+    src/core/application.cpp
+    src/core/global_thread_pool.cpp
+    src/core/window.cpp
+    src/core/ECS/internal.cpp
+    src/core/ECS/registry.cpp
+    src/core/ECS/Systems/character_system.cpp
+    src/core/ECS/Systems/physics_system.cpp
+    src/core/ECS/Systems/transform_system.cpp
+    src/event/event.cpp
+    src/input/input.cpp
+    src/input/key_bindings.cpp
+    src/input/key_handler.cpp
+    src/playercontroller/playercontroller.cpp
+    src/renderer/renderer.cpp
+    src/renderer/shader.cpp
+    src/renderer/shader_program.cpp
+    src/renderer/texture.cpp
+    src/world/block.cpp
+    src/world/chunk.cpp
+    src/world/chunk_manager.cpp
+    src/world/world.cpp
+)
+target_include_directories(SymoCraft PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
+target_compile_features(SymoCraft PRIVATE cxx_std_20)
+target_compile_options(SymoCraft PRIVATE /utf-8)
+set_target_properties(SymoCraft PROPERTIES CXX_EXTENSIONS OFF)
+target_link_libraries(SymoCraft PRIVATE
+    glfw
+    glm::glm
+    symocraft_vendor_headers
+    symocraft_glad
+    symocraft_yaml
+    symocraft_assets
+)
+symocraft_stage_assets(SymoCraft)
 
-add_executable(SymoCraft src/main.cpp
-        vendor/glad/glad.c
-        ${SOURCE_FILE}
-        ${MemoryAllocator}
-        ${Core}
-        ${ECS})
+if(BUILD_TESTING)
+    add_subdirectory(tests)
+endif()
 
-
-# Copying of all necessary dll files on which the executable depends
-add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-        "${PROJECT_SOURCE_DIR}/lib/irrKlang"
-        $<TARGET_FILE_DIR:${PROJECT_NAME}>)
-
-add_subdirectory(vendor/glm)
-add_subdirectory(vendor/glfw)
-
-target_link_libraries(${PROJECT_NAME}
-        glfw
-        irrKlang)
+install(TARGETS SymoCraft RUNTIME DESTINATION .)
+foreach(asset IN LISTS SYMOCRAFT_REQUIRED_ASSETS)
+    get_filename_component(asset_directory "${asset}" DIRECTORY)
+    install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/assets/${asset}"
+        DESTINATION "assets/${asset_directory}")
+endforeach()
 

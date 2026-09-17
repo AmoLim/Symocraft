@@ -5,6 +5,7 @@
 #define STB_IMAGE_IMPLEMENTATION
 
 #include "core/application.h"
+#include "core/asset_paths.h"
 #include "core.h"
 #include "core/window.h"
 #include "renderer/texture.h"
@@ -76,8 +77,10 @@ namespace SymoCraft
             double previous_frame_time = glfwGetTime();
 
             stbi_set_flip_vertically_on_load(true);
+            // Texture retains a string_view, so keep its backing string alive throughout Run.
+            const std::string texture_path = Assets::Resolve("textures/texture_atlas.png").string();
             TextureArray texture_array;
-            texture_array = texture_array.CreateAtlasSlice("../assets/textures/texture_atlas.png", true);
+            texture_array = texture_array.CreateAtlasSlice(texture_path, true);
 
             glfwSetScrollCallback( (GLFWwindow *) window.window_ptr, MouseScrollCallBack);
             glfwSetCursorPosCallback((GLFWwindow *) window.window_ptr, MouseMovementCallBack);

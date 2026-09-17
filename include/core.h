@@ -56,9 +56,6 @@
 // yaml
 #include <yaml-cpp/yaml.h>
 
-// irrKlang for audio
-#include <irrKlang/irrKlang.h>
-
 using uint64 = uint64_t;
 using uint32 = uint32_t;
 using uint16 = uint16_t;
