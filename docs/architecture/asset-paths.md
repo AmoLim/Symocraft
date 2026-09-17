@@ -2,6 +2,8 @@
 
 本文对应 M1 新增的 `SymoCraft::Assets` 模块。目标是让资源定位不再依赖 CLion 的运行目录，也不依赖启动命令所在的位置。本模块是一个小型路径与资源存在性检查组件，不是资源管理器，更不是文件系统安全沙箱。
 
+接口说明已同步 M2-A 的命令行和纹理所有权变化；第 7.1 节仍保留 M1 当时的失败与复测记录，不把历史的三项测试改写为当前九项测试。当前阶段结果以 [M2-A 报告](../milestones/m2-a/README.md) 为准。
+
 ## 1. 解决的问题与职责边界
 
 原有加载调用使用 `../assets/...`。相对路径默认从进程的当前工作目录解析，而不是从源文件、项目根目录或可执行文件所在目录解析。因此，同一个游戏程序可能在 IDE 中正常，在资源管理器或另一个终端目录中启动时失败。
@@ -94,10 +96,12 @@ main -> CheckRequiredAssets -> Resolve
 | --- | --- |
 | 无参数，资源预检通过 | 进入现有游戏初始化、运行和释放流程 |
 | `--check-assets`，资源预检通过 | 输出成功信息，返回 `0`，不进入窗口和 OpenGL 初始化 |
+| `--smoke-frames N`，`N` 为 `1..10000`，资源预检通过 | 进入真实游戏流程，达到指定渲染帧数后正常清理并返回 `0`；不是无窗口预检 |
 | 必需资源缺失或检查失败 | 向标准错误输出诊断，返回 `2` |
-| 其他参数组合 | 输出用法，返回 `64` |
+| 初始化或运行中捕获到异常 | 输出运行错误，统一清理后返回 `3` |
+| 其他参数组合、非法帧数或同时指定互斥选项 | 输出用法，返回 `64` |
 
-这段预检没有重构原有游戏初始化异常处理或 OpenGL 资源释放顺序。不能将其理解为整个启动流程已经具备完整的失败恢复能力。
+资源预检仍只负责路径与文件存在性。M2-A 在应用层补充初始化/运行异常捕获，并把 GPU 对象释放安排在窗口与上下文销毁之前，详见 [应用生命周期](application-lifecycle.md) 和 [运行期图形资源](runtime-resources.md)。这些是加载器与应用层的职责，不能仅由 `--check-assets` 成功推断实际内容正确或所有失败恢复路径都已验证。
 
 ## 4. 为什么使用 GetModuleFileNameW
 
@@ -165,22 +169,18 @@ const auto result = std::filesystem::weakly_canonical(root / relative_path);
 
 ### 6.2 纹理路径的生命周期
 
-现有纹理类型会保留 `std::string_view`。`string_view` 不拥有它引用的字符串，因此下面这种写法不能用于会保留视图的接口：
+M1 时纹理类型会保留 `std::string_view`，因此当时必须避免让对象保存指向临时字符串的视图。M2-A 已将 `Texture::m_filepath` 改为拥有内容的 `std::string`；创建接口虽然仍接受 `string_view`，但在同步创建期间复制路径，不再把该视图保留在返回对象中。
 
 ```cpp
-// Do not retain a view into this temporary string.
-texture_array.CreateAtlasSlice(Assets::Resolve("textures/texture_atlas.png").string(), true);
-```
-
-完整表达式结束后，临时 `std::string` 会销毁，纹理对象保存的视图将失效。当前调用在 `Application::Run` 中保留了明确的所有者：
-
-```cpp
+// The current texture implementation owns a copy of the path.
 const std::string texture_path = Assets::Resolve("textures/texture_atlas.png").string();
 TextureArray texture_array;
 texture_array = texture_array.CreateAtlasSlice(texture_path, true);
 ```
 
-`texture_path` 在 `Run` 期间持续存在，且声明先于纹理对象。这个改动修复的是路径字符串的所有权边界，不代表纹理对象已经完成 RAII 化，也不改变原有 GPU 资源清理流程。
+应用层仍保留上面的具名字符串，便于阅读和诊断，但它已不是纹理对象路径寿命的唯一保障。当前 `Texture` 禁止复制、允许移动，移动时转移 GL 句柄并清零来源，析构和幂等 `Destroy()` 负责释放纹理；图像解码缓冲也由带 `stbi_image_free` 删除器的局部智能指针管理。
+
+`Run()` 的局部纹理在正常返回或异常展开时析构，早于 `Application::Free()` 销毁上下文。RAII 只管理所有权和析构动作，仍要求调用顺序保证 GL 上下文有效；它也不自动解决窄字符串路径的 Unicode 兼容性。完整实现见 [texture.h](../../include/renderer/texture.h)、[texture.cpp](../../src/renderer/texture.cpp)。
 
 当前 GLSL 编译和 YAML 配置加载调用同步消费传入的路径，不保存该路径视图，因此调用表达式中的临时字符串可以覆盖这次同步调用。若未来改成异步加载或保存重载路径，就必须改成持有 `std::string` 或 `std::filesystem::path`，不能继续依赖这个前提。
 
@@ -192,7 +192,7 @@ texture_array = texture_array.CreateAtlasSlice(texture_path, true);
 
 ## 7. 测试设计、复现与证据
 
-CTest 当前注册了四项无窗口测试，定义见 [tests/CMakeLists.txt](../../tests/CMakeLists.txt)：
+CTest 当前共注册九项测试，其中下面四项属于本资源模块，定义见 [tests/CMakeLists.txt](../../tests/CMakeLists.txt)。另外五项检查玩家数学、批次安全、区块网格、方块配置和按键快照，不应计为资源路径模块自身的覆盖：
 
 | 测试 | 检查内容 |
 | --- | --- |
@@ -223,6 +223,8 @@ ctest --test-dir <configured-build-directory> --output-on-failure -R "^assets\."
 
 应先构建，再执行 CTest；CTest 本身不负责补建缺失的程序和资源。`<configured-build-directory>` 必须替换为实际的已配置构建目录。
 
+M2-A 当前 Debug 与 Release 各九项测试通过；真实 Debug 120 帧启动及三项损坏资源探针另有运行证据，见 [M2-A 报告](../milestones/m2-a/README.md)。这些结果不能反向改写下节 M1 的历史记录，也不能替代完整玩法、15 分钟连续运行、性能基线或笔记本验收。
+
 ### 7.1 M1 的沙箱失败与授权复测
 
 本次默认系统 `TEMP` 中的迁移子进程在受限执行环境下失败，造成前两项测试失败；实际游戏的无窗口预检通过。失败日志保留在 [首次构建测试日志](../milestones/m1/evidence/01-debug-build-test.log) 和 [全新 Debug 构建测试日志](../milestones/m1/evidence/02-debug-clean-build-test.log)。这些失败不能删去或改写为成功。
@@ -248,8 +250,8 @@ ctest --test-dir <configured-build-directory> --output-on-failure -R "^assets\."
 
 - 统一清单来源，减少构建与运行时清单漂移。
 - 让文件加载器直接接受 `std::filesystem::path`，完成 Unicode 路径与真实内容的端到端验证。
-- 在加载器层补齐读取、解码、解析和 GPU 创建失败的明确返回结果。
+- 扩展 M2-A 已加入的读取、解码、解析和 GPU 创建异常处理，补充更多格式与资源耗尽场景；不把三类损坏资源测试视为全部失败路径覆盖。
 - 增加实际链接、长路径和不可读文件的专项测试，并准确记录平台条件。
 - 若引入后台资源任务，显式传递拥有数据的路径和值，规定取消、错误交接和主线程 GPU 上传边界。
 
-这些是后续方向，不是 M1 已完成的能力。当前模块应保持小而清楚，先让资源定位具备可验证的工程契约，再在实际需要出现时扩展。
+这些仍是后续方向，其中 M2-A 已做的加载器与生命周期修正以本文和相应模块文档为准，不追溯计入 M1 已完成能力。当前模块应保持小而清楚，在可验证的资源定位契约之上按实际需要扩展。

@@ -22,31 +22,28 @@ namespace SymoCraft {
         float weight;
     };
 
-    static uint16 max_height;
-    static uint16 stone_height;
-    static uint32 seed;
-    static float weight_sum;
-    static std::array<NoiseGenerator, 3> noise_generators{};
-    static std::mt19937 mt{ std::random_device{}() };
-
-    static std::array<std::array<float, k_chunk_width>, k_chunk_length> height_map;
     void InitializeNoise();
     void Report();
 
     class Chunk {
     public:
-        Block* m_local_blocks;
-        BlockVertex3D* m_vertex_data;
-        uint16 m_vertex_count;
-        glm::ivec2 m_chunk_coord;
-        DrawArraysIndirectCommand m_draw_command;
-        uint16 m_draw_command_index;
-        ChunkState state;
+        Chunk();
+        Chunk(const Chunk&) = delete;
+        Chunk& operator=(const Chunk&) = delete;
+        Chunk(Chunk&&) noexcept = default;
+        Chunk& operator=(Chunk&&) noexcept = default;
 
-        Chunk* front_neighbor;
-        Chunk* back_neighbor;
-        Chunk* left_neighbor;
-        Chunk* right_neighbor;
+        std::vector<Block> m_local_blocks;
+        std::vector<BlockVertex3D> m_vertex_data;
+        glm::ivec2 m_chunk_coord{};
+        DrawArraysIndirectCommand m_draw_command{};
+        uint32 m_draw_command_index{};
+        ChunkState state{ChunkState::ToBeUpdated};
+
+        Chunk* front_neighbor{};
+        Chunk* back_neighbor{};
+        Chunk* left_neighbor{};
+        Chunk* right_neighbor{};
 
         bool m_is_fringe_chunk{false};
 
@@ -83,7 +80,8 @@ namespace SymoCraft {
         void GenerateTerrain();
         void GenerateVegetation();
         void GenerateRenderData();
-        void Free() const;
+        void Free();
+        std::size_t VertexCount() const noexcept { return m_vertex_data.size(); }
         void UpdateChunkLocalBlocks(const glm::vec3& block_world_coord);
 
     private:
@@ -93,7 +91,7 @@ namespace SymoCraft {
 
         inline int GetLocalBlockIndex(int x, int y ,int z)
         {
-            return x * k_chunk_length + y * k_chunk_height + z;
+            return (y * k_chunk_length + x) * k_chunk_width + z;
         }
 
     };

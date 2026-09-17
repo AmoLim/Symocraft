@@ -1,4 +1,5 @@
 #include "renderer/shader_program.h"
+#include <stdexcept>
 
 // Internal Structures
 struct ShaderVariable
@@ -32,105 +33,68 @@ static GLint getVariableLocation(const ShaderProgram& shader, const char* varNam
 
 bool ShaderProgram::CompileAndLink(std::string_view vertexShaderFile, std::string_view fragmentShaderFile)
 {
-	// Create the shader program
-	GLuint program = glCreateProgram();
+    Shader vertex_shader;
+    Shader fragment_shader;
+    GLuint program = 0;
+    try
+    {
+        vertex_shader.Compile(ShaderType::Vertex, vertexShaderFile);
+        fragment_shader.Compile(ShaderType::Fragment, fragmentShaderFile);
+        program = glCreateProgram();
+        if (!program)
+            throw std::runtime_error("OpenGL could not create a shader program");
+        glAttachShader(program, vertex_shader.shaderId);
+        glAttachShader(program, fragment_shader.shaderId);
+        glLinkProgram(program);
 
-	// Delete the shader if compilation fails( no sense to keep it )
-	Shader vertexShader{};
-	if (!vertexShader.Compile(ShaderType::Vertex, vertexShaderFile))
-	{
-        vertexShader.Destroy();
-		AmoLogger_Error("Failed to compile vertex shader.");
-		return false;
-	}
-
-	Shader fragmentShader{};
-	if (!fragmentShader.Compile(ShaderType::Fragment, fragmentShaderFile))
-	{
-        fragmentShader.Destroy();
-        AmoLogger_Error("Failed to compile fragment shader.");
-		return false;
-	}
-
-	// Attach the vertex/fragment shaders and try to link them together
-	glAttachShader(program, vertexShader.shaderId);
-	glAttachShader(program, fragmentShader.shaderId);
-
-	// Try to link our program
-	glLinkProgram(program);
-
-	// Log errors if the linking failed
-	GLint isLinked = GL_FALSE;
-	glGetProgramiv(program, GL_LINK_STATUS, &isLinked);
-	if (isLinked == GL_FALSE)
-	{
-		GLint maxLength = 0;
-		glGetProgramiv(program, GL_INFO_LOG_LENGTH, &maxLength);
-
-		// The maxLength includes the NULL character
-		std::vector<GLchar> infoLog(maxLength);
-		glGetProgramInfoLog(program, maxLength, &maxLength, &infoLog[0]);
-
-		// We don't need the program anymore if linking failed
-		glDeleteProgram(program);
-        vertexShader.Destroy();
-        fragmentShader.Destroy();
-
-        AmoLogger_Error("Shader linking failed:\n%s", infoLog.data());
-		programId = UINT32_MAX;
-		return false;
-	}
-
-	// Always detach shaders after a successful link and destroy them since we don't need them anymore
-	glDetachShader(program, vertexShader.shaderId);
-	glDetachShader(program, fragmentShader.shaderId);
-    vertexShader.Destroy();
-    fragmentShader.Destroy();
-
-	// If linking succeeded, get all the active uniforms and store them in our map of uniform variable locations
-	int numUniforms;
-	glGetProgramiv(program, GL_ACTIVE_UNIFORMS, &numUniforms);
-
-	int max_char_length;
-	glGetProgramiv(program, GL_ACTIVE_UNIFORM_MAX_LENGTH, &max_char_length);
-	if (numUniforms > 0 && max_char_length > 0)
-	{
-		auto charBuffer = new char[max_char_length];
-
-		for (int i = 0; i < numUniforms; i++)
-		{
-			int length, size;
-			GLenum data_type;
-			glGetActiveUniform(program, i, max_char_length, &length, &size, &data_type, charBuffer);
-			GLint var_location = glGetUniformLocation(program, charBuffer);
-			ShaderVariable shaderVar;
-			shaderVar.name = charBuffer;
-			shaderVar.var_location = var_location;
-			shaderVar.shaderProgramId = program;
-			allShaderVariableLocations.emplace(shaderVar);
-		}
-
-		delete[] charBuffer;
-        charBuffer = nullptr;
-	}
-
-	programId = program;
-	AmoLogger_Log("Shader compilation and linking succeeded\n<Vertex:%s>\n<Fragment:%s>\n", vertexShaderFile.data(), fragmentShaderFile.data());
-	return true;
+        GLint linked = GL_FALSE;
+        glGetProgramiv(program, GL_LINK_STATUS, &linked);
+        if (linked != GL_TRUE)
+        {
+            GLint length = 0;
+            glGetProgramiv(program, GL_INFO_LOG_LENGTH, &length);
+            std::vector<GLchar> log(static_cast<size_t>(std::max(length, 1)), '\0');
+            glGetProgramInfoLog(program, static_cast<GLsizei>(log.size()), nullptr, log.data());
+            throw std::runtime_error("Shader linking failed: " + std::string(vertexShaderFile) +
+                                     " + " + std::string(fragmentShaderFile) + "\n" + log.data());
+        }
+        glDetachShader(program, vertex_shader.shaderId);
+        glDetachShader(program, fragment_shader.shaderId);
+        vertex_shader.Destroy();
+        fragment_shader.Destroy();
+        Destroy();
+        programId = program;
+    }
+    catch (...)
+    {
+        vertex_shader.Destroy();
+        fragment_shader.Destroy();
+        if (program)
+            glDeleteProgram(program);
+        throw;
+    }
+    std::cout << "Shader compilation and linking succeeded: " << vertexShaderFile
+              << " + " << fragmentShaderFile << '\n';
+    return true;
 }
 
 void ShaderProgram::Destroy()
 {
-	if (programId != UINT32_MAX)
+	if (programId)
 	{
 		glDeleteProgram(programId);
-		programId = UINT32_MAX;
+		programId = 0;
+
+        // GL may reuse names after deletion; rebuild cached locations lazily.
+        clearAllShaderVariables();
 	}
 
 }
 
 void ShaderProgram::Bind() const
 {
+    if (!programId)
+        throw std::logic_error("Cannot bind an uninitialized shader program");
 	glUseProgram(programId);
 }
 
@@ -237,5 +201,7 @@ static GLint getVariableLocation(const ShaderProgram& shader, const char* varNam
 		return iter->var_location;
 	}
 
-	return -1;
+    match.var_location = glGetUniformLocation(shader.programId, varName);
+    allShaderVariableLocations.emplace(match);
+    return match.var_location;
 }

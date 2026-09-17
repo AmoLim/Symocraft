@@ -7,6 +7,8 @@ The current scope is Windows x64 and the existing single-player, fixed-world
 gameplay. Streaming chunks, saving, multiplayer, and additional rendering
 features are not part of the initial recovery milestones. See the
 [technical documentation](docs/README.md) for scope, progress, and evidence.
+The [M2-A desktop report](docs/milestones/m2-a/README.md) records the current
+recovery work and its acceptance limits; M2 as a whole has not passed.
 
 ## Build
 
@@ -45,11 +47,15 @@ presets. See the [build and CLion guide](docs/development/build-and-clion.md).
 ```powershell
 ./out/build/windows-debug/bin/SymoCraft.exe
 ./out/build/windows-debug/bin/SymoCraft.exe --check-assets
+./out/build/windows-debug/bin/SymoCraft.exe --smoke-frames 120
 ```
 
 Assets are staged next to the executable and resolved from its location, not
 the shell's working directory. `--check-assets` checks required files without
 opening a window; it does not validate gameplay or shader/image contents.
+`--smoke-frames 1..10000` loads the real game and exits after the requested
+number of rendered frames. It still needs a working OpenGL environment and
+does not replace interactive gameplay, long-run, or performance acceptance.
 Use an ASCII installation path for the complete game until the legacy loaders'
 Unicode handling has been validated.
 
@@ -57,6 +63,19 @@ Unicode handling has been validated.
 directory at `out/install/windows-release`. This is not yet a validated final
 redistributable: runtime-library deployment, gameplay, and long-run acceptance
 remain separate milestones.
+
+## M2-A Candidate
+
+The desktop candidate used for M2-A verification is
+`out/install/m2-a/SymoCraft.exe`, with its adjacent `assets` directory.
+The handoff archive path is `out/packages/Symocraft-M2-A-windows-x64.zip`,
+containing the complete `m2-a` directory. Keep the executable and assets together.
+
+This is a development candidate, not a final redistributable. Debug and Release
+each passed nine automated tests; desktop smoke and limited interactive results
+are recorded in the [M2-A report](docs/milestones/m2-a/README.md). The complete
+14-case gameplay checklist, 15-minute session, performance baseline, Y9000P
+laptop acceptance, and clean-machine runtime deployment remain outstanding.
 
 ## Controls
 

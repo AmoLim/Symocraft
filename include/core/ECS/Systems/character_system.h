@@ -20,6 +20,7 @@ namespace SymoCraft
         {
             void Init();
             void Update(ECS::Registry& registry);
+            void SyncCamera(ECS::Registry& registry);
         }
     }
 }

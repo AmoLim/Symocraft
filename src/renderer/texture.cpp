@@ -1,50 +1,105 @@
 #include "renderer/texture.h"
 
+#include <memory>
+#include <stdexcept>
+#include <utility>
+
+namespace
+{
+    void CheckTextureError(const std::string& operation)
+    {
+        const GLenum error = glGetError();
+        if (error != GL_NO_ERROR)
+            throw std::runtime_error(operation + ": OpenGL error " + std::to_string(error));
+    }
+}
+
+Texture::~Texture()
+{
+    Destroy();
+}
+
+Texture::Texture(Texture&& other) noexcept
+{
+    *this = std::move(other);
+}
+
+Texture& Texture::operator=(Texture&& other) noexcept
+{
+    if (this != &other)
+    {
+        Destroy();
+        m_filepath = std::move(other.m_filepath);
+        m_width = std::exchange(other.m_width, 0);
+        m_height = std::exchange(other.m_height, 0);
+        m_channel_amount = std::exchange(other.m_channel_amount, 0);
+        m_texture_format = std::exchange(other.m_texture_format, 0);
+        m_internal_format = std::exchange(other.m_internal_format, 0);
+        m_texture_Id = std::exchange(other.m_texture_Id, 0);
+    }
+    return *this;
+}
+
+void Texture::Destroy() noexcept
+{
+    if (m_texture_Id)
+    {
+        glDeleteTextures(1, &m_texture_Id);
+        m_texture_Id = 0;
+    }
+}
+
 Texture Texture::CreateRegularTexture(std::string_view filepath, bool pixelated)
 {
     Texture res;
     res.m_filepath = filepath;
-    uint8* pixels = stbi_load(res.m_filepath.data(), &res.m_width, &res.m_height, &res.m_channel_amount, 0);
+    std::unique_ptr<stbi_uc, decltype(&stbi_image_free)> pixels(
+        stbi_load(res.m_filepath.c_str(), &res.m_width, &res.m_height, &res.m_channel_amount, 0),
+        stbi_image_free);
+    if (!pixels)
+    {
+        const char* reason = stbi_failure_reason();
+        throw std::runtime_error("Failed to decode texture " + res.m_filepath + ": " +
+                                 (reason ? reason : "unknown decoder error"));
+    }
+    if (res.m_width <= 0 || res.m_height <= 0)
+        throw std::runtime_error("Texture has invalid dimensions: " + res.m_filepath);
+    GLint max_size = 0;
+    glGetIntegerv(GL_MAX_TEXTURE_SIZE, &max_size);
+    if (res.m_width > max_size || res.m_height > max_size)
+        throw std::runtime_error("Texture dimensions exceed the GPU limit: " + res.m_filepath);
 
     res.m_texture_format = GL_RGBA;
-    res.m_internal_format = GL_RGBA32F;
+    res.m_internal_format = GL_RGBA8;
     if (res.m_channel_amount == 3)
     {
         res.m_texture_format = GL_RGB;
-        res.m_internal_format = GL_RGB32F;
+        res.m_internal_format = GL_RGB8;
     }
     else if (res.m_channel_amount != 4)
     {
-        AmoLogger_Error("Unknown number of channels %d in image %s", res.m_channel_amount, res.m_filepath.data());
-        stbi_image_free(pixels);
-        return Texture{};
+        throw std::runtime_error("Texture must have RGB or RGBA channels: " + res.m_filepath);
     }
 
     // Generate and bind the texture object
     glCreateTextures(GL_TEXTURE_2D, 1, &res.m_texture_Id);
+    if (!res.m_texture_Id)
+        throw std::runtime_error("OpenGL could not create texture: " + res.m_filepath);
 
     glTextureParameteri(res.m_texture_Id, GL_TEXTURE_WRAP_S, GL_REPEAT);
     glTextureParameteri(res.m_texture_Id, GL_TEXTURE_WRAP_T, GL_REPEAT);
     glTextureParameteri(res.m_texture_Id, GL_TEXTURE_MIN_FILTER, pixelated ? GL_NEAREST : GL_LINEAR);
     glTextureParameteri(res.m_texture_Id, GL_TEXTURE_MAG_FILTER, pixelated ? GL_NEAREST : GL_LINEAR);
 
-    if (pixels)
-    {
-        glTextureStorage2D(res.m_texture_Id, 1,
-                           res.m_internal_format,
-                           res.m_width, res.m_height);
-        glTextureSubImage2D(res.m_texture_Id, 0,
-                            0, 0,
-                            res.m_width, res.m_height,
-                            res.m_texture_format, GL_UNSIGNED_BYTE, pixels);
-        glGenerateTextureMipmap(res.m_texture_Id);
-    }
-    else
-    {
-        AmoLogger_Error("STB failed to load image: %s\n STB Failure Reason: %s\n", res.m_filepath.data(), stbi_failure_reason());
-    }
-
-    stbi_image_free(pixels);
+    glTextureStorage2D(res.m_texture_Id, 1, res.m_internal_format, res.m_width, res.m_height);
+    CheckTextureError("Allocating texture " + res.m_filepath);
+    GLint unpack_alignment = 4;
+    glGetIntegerv(GL_UNPACK_ALIGNMENT, &unpack_alignment);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTextureSubImage2D(res.m_texture_Id, 0, 0, 0, res.m_width, res.m_height,
+                       res.m_texture_format, GL_UNSIGNED_BYTE, pixels.get());
+    glPixelStorei(GL_UNPACK_ALIGNMENT, unpack_alignment);
+    CheckTextureError("Uploading texture " + res.m_filepath);
 
     return res;
 }
@@ -54,17 +109,33 @@ TextureArray TextureArray::CreateAtlasSlice(std::string_view filepath, bool pixe
     // Set up
     Texture tex_atlas = CreateRegularTexture( filepath, pixelated );
 
-    constexpr uint16 tile_width = 64, tile_height = 64;
-    uint16 tile_columns = tex_atlas.m_width / tile_width,
-           tile_rows = tex_atlas.m_height / tile_height,
-           tile_quantity = tile_columns * tile_rows;
+    constexpr int tile_width = 64, tile_height = 64;
+    if (tex_atlas.m_width % tile_width != 0 || tex_atlas.m_height % tile_height != 0)
+        throw std::runtime_error("Texture atlas dimensions must be multiples of 64: " + tex_atlas.m_filepath);
+    const int tile_columns = tex_atlas.m_width / tile_width;
+    const int tile_rows = tex_atlas.m_height / tile_height;
+    const int64_t tile_quantity = static_cast<int64_t>(tile_columns) * tile_rows;
+    GLint max_layers = 0;
+    glGetIntegerv(GL_MAX_ARRAY_TEXTURE_LAYERS, &max_layers);
+    if (tile_quantity <= 0 || tile_quantity > max_layers || tile_quantity > UINT16_MAX)
+        throw std::runtime_error("Texture atlas layer count exceeds the supported range: " + tex_atlas.m_filepath);
 
 
     // Create texture array to store slices
     TextureArray tile_set;
-    tile_set.layer_amount = tile_quantity;
+    tile_set.m_filepath = tex_atlas.m_filepath;
+    tile_set.m_width = tile_width;
+    tile_set.m_height = tile_height;
+    tile_set.m_channel_amount = tex_atlas.m_channel_amount;
+    tile_set.m_texture_format = tex_atlas.m_texture_format;
+    tile_set.m_internal_format = tex_atlas.m_internal_format;
+    tile_set.layer_amount = static_cast<uint16>(tile_quantity);
     glCreateTextures(GL_TEXTURE_2D_ARRAY, 1, &tile_set.m_texture_Id);
-    glTextureStorage3D(tile_set.m_texture_Id, 1, tex_atlas.m_internal_format, tile_width, tile_height, tile_quantity);
+    if (!tile_set.m_texture_Id)
+        throw std::runtime_error("OpenGL could not create texture array: " + tex_atlas.m_filepath);
+    glTextureStorage3D(tile_set.m_texture_Id, 1, tex_atlas.m_internal_format,
+                       tile_width, tile_height, static_cast<GLsizei>(tile_quantity));
+    CheckTextureError("Allocating texture array " + tile_set.m_filepath);
 
     for (GLsizei i = 0; i < tile_quantity; ++i)
     {
@@ -77,14 +148,14 @@ TextureArray TextureArray::CreateAtlasSlice(std::string_view filepath, bool pixe
                            0, 0, 0, i,  // Destiny texture array mipmap level, x coord, y coord, z coord(layers)
                            tile_width, tile_height, 1);
     }
-    glDeleteTextures(1, &tex_atlas.m_texture_Id);
+    tex_atlas.Destroy();
 
     //Misc
     glTextureParameteri(tile_set.m_texture_Id, GL_TEXTURE_WRAP_S, GL_REPEAT);
     glTextureParameteri(tile_set.m_texture_Id, GL_TEXTURE_WRAP_T, GL_REPEAT);
     glTextureParameteri(tile_set.m_texture_Id, GL_TEXTURE_MIN_FILTER, pixelated ? GL_NEAREST : GL_LINEAR);
     glTextureParameteri(tile_set.m_texture_Id, GL_TEXTURE_MAG_FILTER, pixelated ? GL_NEAREST : GL_LINEAR);
-    glGenerateTextureMipmap(tile_set.m_texture_Id);
+    CheckTextureError("Creating texture atlas array " + tile_set.m_filepath);
 
     return tile_set;
 }

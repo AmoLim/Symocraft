@@ -6,7 +6,11 @@
 
 struct ShaderProgram
 {
-	uint32 programId;
+	uint32 programId{};
+
+    ShaderProgram() = default;
+    ShaderProgram(const ShaderProgram&) = delete;
+    ShaderProgram& operator=(const ShaderProgram&) = delete;
 
 	bool CompileAndLink(std::string_view vertexShaderFile, std::string_view fragmentShaderFile);
 	void Bind() const;

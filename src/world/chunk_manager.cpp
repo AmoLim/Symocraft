@@ -56,7 +56,7 @@ namespace SymoCraft{
 
         Chunk* GetChunk(const glm::ivec2& chunkCoords)
         {
-            const robin_hood::unordered_map<glm::ivec2, Chunk>::iterator& iter = chunks.find(chunkCoords);
+            const auto iter = chunks.find(chunkCoords);
             if (iter != chunks.end())
                 return &iter->second;
             else
@@ -70,26 +70,16 @@ namespace SymoCraft{
 
         void CreateChunk(const glm::ivec2 &chunk_coord)
         {
-            static uint16 chunk_index;
-            Chunk *chunk = GetChunk(chunk_coord);
-            //If the chunk hasn't been instantiated, create the chunk
-            if (!chunk)
+            auto [iter, inserted] = chunks.try_emplace(chunk_coord);
+            if (inserted)
             {
-                Chunk new_chunk{};
-                new_chunk.m_local_blocks = (Block *)AmoMemory_Allocate(sizeof(Block) * k_chunk_length * k_chunk_width * k_chunk_height);
-                new_chunk.m_chunk_coord = chunk_coord;
-                new_chunk.m_vertex_data = (BlockVertex3D *) AmoMemory_Allocate(sizeof(BlockVertex3D) * World::max_vertices_per_chunk);
-                new_chunk.m_vertex_count = 0;
-                new_chunk.m_draw_command.first = chunk_index++ * sizeof(BlockVertex3D) * World::max_vertices_per_chunk;
-                new_chunk.m_draw_command.baseInstance = 0;
-                new_chunk.m_draw_command.instanceCount = 1;
-                new_chunk.front_neighbor = GetChunk(chunk_coord + INormals2::Front);
-                new_chunk.back_neighbor = GetChunk(chunk_coord + INormals2::Back);
-                new_chunk.left_neighbor = GetChunk(chunk_coord + INormals2::Left);
-                new_chunk.right_neighbor = GetChunk(chunk_coord + INormals2::Right);
-                new_chunk.state = ChunkState::ToBeUpdated;
-
-                chunks[new_chunk.m_chunk_coord] = new_chunk;
+                Chunk& chunk = iter->second;
+                chunk.m_chunk_coord = chunk_coord;
+                chunk.m_draw_command.instanceCount = 1;
+                chunk.front_neighbor = GetChunk(chunk_coord + INormals2::Front);
+                chunk.back_neighbor = GetChunk(chunk_coord + INormals2::Back);
+                chunk.left_neighbor = GetChunk(chunk_coord + INormals2::Left);
+                chunk.right_neighbor = GetChunk(chunk_coord + INormals2::Right);
             }
         }
 
@@ -107,9 +97,8 @@ namespace SymoCraft{
                 auto iter4 = chunks.find(chunk.m_chunk_coord + INormals2::Right);
                 chunk.right_neighbor = iter4 == chunks.end() ? nullptr : &iter4->second;
 
-                if(chunk.front_neighbor == nullptr || chunk.back_neighbor == nullptr ||
-                   chunk.left_neighbor == nullptr || chunk.right_neighbor == nullptr)
-                    chunk.m_is_fringe_chunk = true;
+                chunk.m_is_fringe_chunk = chunk.front_neighbor == nullptr || chunk.back_neighbor == nullptr ||
+                    chunk.left_neighbor == nullptr || chunk.right_neighbor == nullptr;
             }
         }
 
@@ -127,18 +116,15 @@ namespace SymoCraft{
         void LoadAllChunks()
         {
             for(auto &pair : chunks)
-                if(pair.second.m_vertex_count == 0 || pair.second.m_is_fringe_chunk)
+                if(pair.second.m_vertex_data.empty() || pair.second.m_is_fringe_chunk)
                     continue;
                 else
-                    chunk_batch.AddVertex(pair.second.m_vertex_data, pair.second.m_vertex_count);
+                    chunk_batch.AddVertex(pair.second.m_vertex_data.data(), pair.second.VertexCount());
         }
 
         void FreeAllChunks()
         {
-            for(auto &pair : chunks)
-                // if (pair.second.m_vertex_count != 0)
-                    pair.second.Free();
-
+            chunks.clear();
         }
     }
 }

@@ -21,10 +21,10 @@ namespace SymoCraft
     {
     public:
         // public data members
-        int width;
-        int height;
-        const char* title;
-        void* window_ptr;
+        int width{};
+        int height{};
+        const char* title{};
+        void* window_ptr{};
 
         // GLFW function interface
         void MakeContextCurrent();

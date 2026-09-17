@@ -1,70 +1,59 @@
 #include "renderer/shader.h"
 
+#include <sstream>
+#include <stdexcept>
+
 bool Shader::Compile(ShaderType type, std::string_view shaderFilepath)
 {
-	// Report compilation
-    AmoLogger_Log("Compiling shader: %s", shaderFilepath.data());
+    const std::string path(shaderFilepath);
+    std::ifstream input(path, std::ios::in | std::ios::binary);
+    if (!input)
+        throw std::runtime_error("Cannot open shader: " + path);
+    std::ostringstream source;
+    source << input.rdbuf();
+    if (input.bad() || source.str().empty())
+        throw std::runtime_error("Shader is empty or unreadable: " + path);
 
-	// Read the shader source code from the file
-	std::ifstream shader_file(shaderFilepath.data(), std::ios::in | std::ios::binary);
-	std::stringstream shader_stream;
-	std::string shader_source_code;
+    const GLenum shader_type = toGlShaderType(type);
+    if (shader_type == GL_INVALID_ENUM)
+        throw std::invalid_argument("Unknown shader type for " + path);
 
-	if( shader_file )
-	{
-		shader_stream << shader_file.rdbuf();
-		shader_source_code = shader_stream.str();
-	}
-	else
-        AmoLogger_Error("Could not open file: %s",  shaderFilepath.data());
-
-
-	GLenum shaderType = toGlShaderType(type);
-	if (shaderType == GL_INVALID_ENUM) {
-		AmoLogger_Error("ShaderType is unknown\n");
-		return false;
-	}
-
-	// Create an empty shader handle
-	shaderId = glCreateShader(shaderType);
-
-	// Send the shader source code to GL, and Compile the shader
-	const char* source_c_str = shader_source_code.c_str();
-	glShaderSource(shaderId, 1, &source_c_str, nullptr);
-	glCompileShader(shaderId);
-
-
-	// Check if the compilation succeeded
-	GLint isCompiled = 0;
-	glGetShaderiv(shaderId, GL_COMPILE_STATUS, &isCompiled);
-	if (isCompiled == GL_FALSE)
-	{
-		// If compilation failed, find out why and log the error
-		GLint maxLength = 0;
-		glGetShaderiv(shaderId, GL_INFO_LOG_LENGTH, &maxLength);
-
-		// The maxLength includes the NULL character
-		std::vector<GLchar> infoLog(maxLength);
-		glGetShaderInfoLog(shaderId, maxLength, &maxLength, &infoLog[0]);
-
-		// We don't need the shader anymore if compilation failed
-		glDeleteShader(shaderId);
-
-		AmoLogger_Error("Shader Compilation failed: \n%s", infoLog.data());
-
-		shaderId = UINT32_MAX;
-		return false;
-	}
-
-	return true;
+    Destroy();
+    shaderId = glCreateShader(shader_type);
+    if (!shaderId)
+        throw std::runtime_error("OpenGL could not create shader: " + path);
+    try
+    {
+        const std::string text = source.str();
+        const char* data = text.c_str();
+        glShaderSource(shaderId, 1, &data, nullptr);
+        glCompileShader(shaderId);
+        GLint compiled = GL_FALSE;
+        glGetShaderiv(shaderId, GL_COMPILE_STATUS, &compiled);
+        if (compiled != GL_TRUE)
+        {
+            GLint length = 0;
+            glGetShaderiv(shaderId, GL_INFO_LOG_LENGTH, &length);
+            std::vector<GLchar> log(static_cast<size_t>(std::max(length, 1)), '\0');
+            glGetShaderInfoLog(shaderId, static_cast<GLsizei>(log.size()), nullptr, log.data());
+            throw std::runtime_error("Shader compilation failed: " + path + "\n" + log.data());
+        }
+        m_type = type;
+    }
+    catch (...)
+    {
+        Destroy();
+        throw;
+    }
+    return true;
 }
 
 void Shader::Destroy()
 {
-	if (shaderId != UINT32_MAX)
+	if (shaderId)
 	{
 		glDeleteShader(shaderId);
-		shaderId = UINT32_MAX;
+		shaderId = 0;
 	}
 }
 
