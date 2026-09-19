@@ -16,6 +16,7 @@ namespace SymoCraft
     };
 
     void LoadBlocks(std::string_view block_format_config);
+    void ValidateBlockTextures(std::size_t layer_count);
     uint16 get_block_id(std::string_view block_name);
     const BlockFormat& get_block(int block_id);
     const BlockFormat& get_block(std::string_view name);

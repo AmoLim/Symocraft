@@ -9,21 +9,32 @@
 
 namespace SymoCraft
 {
+    static uint32 seed;
+    static float weight_sum;
+    static std::array<NoiseGenerator, 3> noise_generators{};
+    static std::mt19937 mt{ std::random_device{}() };
     static float g_normal;
     static std::array<std::array<BlockVertex3D, 4>, 6> block_faces{}; // Each block contains 6 faces, which contains 4 vertices
 
+    Chunk::Chunk()
+        : m_local_blocks(k_chunk_length * k_chunk_width * k_chunk_height, BlockConstants::AIR_BLOCK)
+    {
+    }
+
     Block Chunk::GetLocalBlock(int x, int y, int z) {
+        if (y < 0 || y >= k_chunk_height || m_local_blocks.empty())
+            return BlockConstants::NULL_BLOCK;
         if (x >= k_chunk_length || x < 0 || z >= k_chunk_width || z < 0) {
             if (x >= k_chunk_length) {
-                return front_neighbor->GetLocalBlock(x - k_chunk_length, y, z);
+                return front_neighbor ? front_neighbor->GetLocalBlock(x - k_chunk_length, y, z) : BlockConstants::NULL_BLOCK;
             } else if (x < 0) {
-                return back_neighbor->GetLocalBlock(k_chunk_length + x, y, z);
+                return back_neighbor ? back_neighbor->GetLocalBlock(k_chunk_length + x, y, z) : BlockConstants::NULL_BLOCK;
             }
 
             if (z >= k_chunk_width) {
-                return right_neighbor->GetLocalBlock(x, y, z - k_chunk_width);
+                return right_neighbor ? right_neighbor->GetLocalBlock(x, y, z - k_chunk_width) : BlockConstants::NULL_BLOCK;
             } else if (z < 0) {
-                return left_neighbor->GetLocalBlock(x, y, k_chunk_width + z);
+                return left_neighbor ? left_neighbor->GetLocalBlock(x, y, k_chunk_width + z) : BlockConstants::NULL_BLOCK;
             }
         }
         else if (y >= k_chunk_height || y < 0)
@@ -39,22 +50,20 @@ namespace SymoCraft
     }
 
     bool Chunk::SetLocalBlock(int x, int y, int z, uint16 block_id) {
+        if (y < 0 || y >= k_chunk_height || m_local_blocks.empty())
+            return false;
         if (x >= k_chunk_length || x < 0 || z >= k_chunk_width || z < 0)
         {
             if (x >= k_chunk_length) {
-                if(front_neighbor)
-                return front_neighbor->SetLocalBlock(x - k_chunk_length, y, z, block_id);
+                return front_neighbor && front_neighbor->SetLocalBlock(x - k_chunk_length, y, z, block_id);
             } else if (x < 0) {
-                if(back_neighbor)
-                return back_neighbor->SetLocalBlock(k_chunk_length + x, y, z, block_id);
+                return back_neighbor && back_neighbor->SetLocalBlock(k_chunk_length + x, y, z, block_id);
             }
 
             if (z >= k_chunk_width) {
-                if(right_neighbor)
-                return right_neighbor->SetLocalBlock(x, y, z - k_chunk_width, block_id);
+                return right_neighbor && right_neighbor->SetLocalBlock(x, y, z - k_chunk_width, block_id);
             } else if (z < 0) {
-                if(left_neighbor)
-                return left_neighbor->SetLocalBlock(x, y, k_chunk_width + z, block_id);
+                return left_neighbor && left_neighbor->SetLocalBlock(x, y, k_chunk_width + z, block_id);
             }
         }
         else if (y >= k_chunk_height || y < 0)
@@ -65,6 +74,7 @@ namespace SymoCraft
         BlockFormat blockFormat = get_block(block_id);
         m_local_blocks[index].block_id = block_id;
         m_local_blocks[index].SetTransparency(blockFormat.m_is_transparent);
+        m_local_blocks[index].SetBlendability(blockFormat.m_is_blendable);
         m_local_blocks[index].SetLightSource(blockFormat.m_is_lightSource);
 
         UpdateChunkLocalBlocks({x, y, z});
@@ -78,17 +88,19 @@ namespace SymoCraft
     }
 
     bool Chunk::RemoveLocalBlock(int x, int y, int z) {
+        if (y < 0 || y >= k_chunk_height || m_local_blocks.empty())
+            return false;
         if (x >= k_chunk_length || x < 0 || z >= k_chunk_width || z < 0) {
             if (x >= k_chunk_length) {
-                return front_neighbor->RemoveLocalBlock(x - k_chunk_length, y, z);
+                return front_neighbor && front_neighbor->RemoveLocalBlock(x - k_chunk_length, y, z);
             } else if (x < 0) {
-                return back_neighbor->RemoveLocalBlock(k_chunk_length + x, y, z);
+                return back_neighbor && back_neighbor->RemoveLocalBlock(k_chunk_length + x, y, z);
             }
 
             if (z >= k_chunk_width) {
-                return right_neighbor->RemoveLocalBlock(x, y, z - k_chunk_width);
+                return right_neighbor && right_neighbor->RemoveLocalBlock(x, y, z - k_chunk_width);
             } else if (z < 0) {
-                return left_neighbor->RemoveLocalBlock(x, y, k_chunk_width + z);
+                return left_neighbor && left_neighbor->RemoveLocalBlock(x, y, k_chunk_width + z);
             }
         } else if (y >= k_chunk_height || y < 0) {
             return false;
@@ -98,6 +110,7 @@ namespace SymoCraft
         int index = SymoCraft::Chunk::GetLocalBlockIndex(x, y, z);
         m_local_blocks[index].block_id = BlockConstants::AIR_BLOCK.block_id;
         m_local_blocks[index].SetTransparency(true);
+        m_local_blocks[index].SetBlendability(false);
         m_local_blocks[index].SetLightSource(false);
 
         UpdateChunkLocalBlocks({x, y, z});
@@ -112,6 +125,7 @@ namespace SymoCraft
 
     void InitializeNoise() {
         seed = mt();
+        weight_sum = 0.0f;
 
         for(auto& noise_generator : noise_generators)
         {
@@ -158,14 +172,15 @@ namespace SymoCraft
     }
 
     void Chunk::GenerateTerrain() {
-        AmoBase::AmoMemory_ZeroMem(m_local_blocks, sizeof(Block) * k_chunk_width * k_chunk_height * k_chunk_length);
+        m_local_blocks.assign(k_chunk_width * k_chunk_height * k_chunk_length, BlockConstants::AIR_BLOCK);
+        state = ChunkState::ToBeUpdated;
 
         int world_x = m_chunk_coord.x * k_chunk_length;
         int world_z = m_chunk_coord.y * k_chunk_width;
         for (int z = 0; z < k_chunk_width; z++) {
             for (int x = 0; x < k_chunk_length; x++) {
-                max_height = (uint16)GetNoise(x + world_x, z + world_z);
-                stone_height = max_height - 6;
+                const int max_height = std::clamp(static_cast<int>(GetNoise(x + world_x, z + world_z)), 0, k_chunk_height - 1);
+                const int stone_height = std::max(0, max_height - 6);
 
                 for (int y = 0; y < k_chunk_height; y++) {
                     const int block_index = GetLocalBlockIndex(x , y, z);
@@ -219,7 +234,7 @@ namespace SymoCraft
                             m_local_blocks[block_index].SetTransparency(false);
                             m_local_blocks[block_index].SetBlendability(true);
                             m_local_blocks[block_index].SetLightSource(false);
-                        } else if (!m_local_blocks[block_index].block_id) {
+                        } else {
                             m_local_blocks[block_index].block_id = BlockConstants::AIR_BLOCK.block_id;
                             m_local_blocks[block_index].SetTransparency(true);
                             m_local_blocks[block_index].SetBlendability(false);
@@ -232,12 +247,16 @@ namespace SymoCraft
 
     void Chunk::GenerateVegetation()
     {
+           if (m_is_fringe_chunk || m_local_blocks.empty())
+               return;
            const int worldChunkX = m_chunk_coord.x * 16;
            const int worldChunkZ = m_chunk_coord.y * 16;
 
-           for (int x = 0; x < World::chunk_radius; x++)
+           const int vegetation_length = std::min<int>(World::chunk_radius, k_chunk_length);
+           const int vegetation_width = std::min<int>(World::chunk_radius, k_chunk_width);
+           for (int x = 0; x < vegetation_length; x++)
            {
-               for (int z = 0; z < World::chunk_radius; z++)
+               for (int z = 0; z < vegetation_width; z++)
                {
                    // Generate trees at random
                    if (mt() % 100 > 98)
@@ -324,24 +343,24 @@ namespace SymoCraft
            }
     }
 
-    void Chunk::Free() const
+    void Chunk::Free()
     {
-        AmoMemory_Free(m_local_blocks);
-        AmoMemory_Free(m_vertex_data);
+        std::vector<Block>().swap(m_local_blocks);
+        std::vector<BlockVertex3D>().swap(m_vertex_data);
+        front_neighbor = back_neighbor = left_neighbor = right_neighbor = nullptr;
+        m_draw_command = {};
+        state = ChunkState::None;
     }
 
     void Chunk::GenerateRenderData()
     {
-        //Clear old data
-        m_vertex_count = 0;
-        AmoMemory_Free(m_vertex_data);
-
-        //Initialization
-        m_vertex_data = (BlockVertex3D *) AmoMemory_Allocate(sizeof(BlockVertex3D) * World::max_vertices_per_chunk);
-
-        state = ChunkState::Updated;
-        if(m_is_fringe_chunk)
+        m_vertex_data.clear();
+        m_draw_command.count = 0;
+        if(m_is_fringe_chunk || m_local_blocks.empty())
+        {
+            state = ChunkState::Updated;
             return;
+        }
 
         const int kWorldChunkX = m_chunk_coord.x * 16;
         const int kWorldChunkZ = m_chunk_coord.y * 16;
@@ -399,18 +418,10 @@ namespace SymoCraft
                             }
 
 
-                            // Add the face's top left triangle
-                            m_vertex_data[m_vertex_count++] = block_faces[i][0];
-                            m_vertex_data[m_vertex_count++] = block_faces[i][1];
-                            m_vertex_data[m_vertex_count++] = block_faces[i][2];
-
-                            // Add the face's bottom right triangle
-                            m_vertex_data[m_vertex_count++] = block_faces[i][0];
-                            m_vertex_data[m_vertex_count++] = block_faces[i][2];
-                            m_vertex_data[m_vertex_count++] = block_faces[i][3];
-
-                            if(m_vertex_count > World::max_vertices_per_chunk)
-                                AmoLogger_Warning("Maximum vertex capacity exceeded.\n");
+                            // vector grows before insertion; no fixed buffer or 16-bit counter.
+                            m_vertex_data.insert(m_vertex_data.end(), {
+                                block_faces[i][0], block_faces[i][1], block_faces[i][2],
+                                block_faces[i][0], block_faces[i][2], block_faces[i][3]});
                         }
                         i++;
                     }
@@ -418,7 +429,8 @@ namespace SymoCraft
             }
         }
 
-        AmoMemory_ReAlloc(m_vertex_data, sizeof(BlockVertex3D) * m_vertex_count);
+        m_draw_command.count = static_cast<uint32>(m_vertex_data.size());
+        state = ChunkState::Updated;
     }
 
     void Chunk::UpdateChunkLocalBlocks(const glm::vec3& block_local_coord)

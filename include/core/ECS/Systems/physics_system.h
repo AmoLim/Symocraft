@@ -25,7 +25,8 @@ namespace SymoCraft
         // Initializing physics system
 
         // physic update function
-        void Update(ECS::Registry& registry);
+        void Update(ECS::Registry& registry, float frame_delta);
+        void ResetTiming();
 
         // Ray Casting for player on the block
         RaycastStaticResult RayCastStatic(const glm::vec3 &origin, const glm::vec3 &normal_direction

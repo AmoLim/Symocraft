@@ -4,10 +4,10 @@
 #include "core/ECS/Systems/physics_system.h"
 #include "core/ECS/component.h"
 #include "core/ECS/registry.h"
-#include "core/application.h"
 #include "world/chunk.h"
-#include "renderer/renderer.h"
+#include "world/chunk_manager.h"
 #include "core/constants.h"
+#include "playercontroller/player_math.h"
 
 namespace SymoCraft::Physics
     {
@@ -24,16 +24,6 @@ namespace SymoCraft::Physics
             RIGHT
         };
 
-        bool compare(float x, float y, float epsilon = std::numeric_limits<float>::min())
-        {
-            return abs(x - y) <= epsilon * std::max(1.0f, std::max(abs(x), abs(y)));
-        }
-
-        bool compare(const glm::vec3& vec1, const glm::vec3& vec2, float epsilon = std::numeric_limits<float>::min())
-        {
-            return compare(vec1.x, vec2.x, epsilon) && compare(vec1.y, vec2.y, epsilon) && compare(vec1.z, vec2.z, epsilon);
-        }
-
         struct CollisionInfo
         {
             glm::vec3 overlap_part;     // overlap part of two entity
@@ -46,6 +36,24 @@ namespace SymoCraft::Physics
         static glm::vec3 uniform_gravity = glm::vec3(0.0, 20.0, 0.0);
         static glm::vec3 terminal_velocity = glm::vec3(50.0f, 50.0f, 50.0f);
         static const float kPhysicsUpdateRate = 1.0f / 120.0f; // 120Hz
+        static PlayerMath::FixedStepBudget step_budget;
+
+        static bool IsSolidVoxel(const glm::ivec3& cell)
+        {
+            if (cell.y < 0 || cell.y >= k_chunk_height)
+                return false;
+            const Block block = ChunkManager::GetBlock(glm::vec3(cell) + glm::vec3(0.5f));
+            if (block == BlockConstants::NULL_BLOCK || block == BlockConstants::AIR_BLOCK)
+                return false;
+            return get_block(block.block_id).m_is_solid;
+        }
+
+        static bool HasGroundSupport(const Transform& transform, const HitBox& hit_box)
+        {
+            const glm::vec3 minimum = transform.position + hit_box.offset - hit_box.size * 0.5f;
+            const glm::vec3 maximum = transform.position + hit_box.offset + hit_box.size * 0.5f;
+            return PlayerMath::HasGroundSupport(minimum, maximum, IsSolidVoxel);
+        }
 
         // ----------------------------------------------------------------------------------------------------------
         // some useful uniform function in physics system
@@ -55,12 +63,8 @@ namespace SymoCraft::Physics
         static bool IsColliding(const HitBox &hb1, const Transform &tr1
                                 , const HitBox &hb2, const Transform &tr2);
 
-        static float PenetrationAmount(const glm::vec3 &hb1_negative, const glm::vec3 &hb1_positive
-                                       ,const glm::vec3 &hb2_negative, const glm::vec3 &hb2_positive
-                                       , const glm::vec3 &axis);
-
         //static Interval GetInterval(const HitBox &box, const Transform &transform, const glm::vec3 &axis);
-        static void GetQuadrantResult(const Transform &tr1, const Transform &tr2, const HitBox &hb2_expanded
+        static void GetQuadrantResult(const Transform &tr1, const Transform &tr2, const HitBox &hb1, const HitBox &hb2_expanded
                                       , CollisionInfo* res ,Direction x_face, Direction y_face, Direction z_face);
         //static glm::vec3 ClosetPointOnRay(const glm::vec3 ray_origin, const glm::vec3 ray_direction
          //                                 , float ray_max_distance, glm::vec3 &point);
@@ -69,15 +73,16 @@ namespace SymoCraft::Physics
         // ----------------------------------------------------------------------------------------------------------
         // Physics system core
 
-        void Update(ECS::Registry& registry)
+        void ResetTiming()
         {
-            static float accumulated_delta_time = 0.0f;
-            accumulated_delta_time += Application::delta_time;
+            step_budget.Reset();
+        }
 
-            while (accumulated_delta_time >= kPhysicsUpdateRate)
+        void Update(ECS::Registry& registry, float frame_delta)
+        {
+            const unsigned steps = step_budget.Consume(frame_delta);
+            for (unsigned step = 0; step < steps; ++step)
             {
-                accumulated_delta_time -= kPhysicsUpdateRate;
-
                 for (ECS::EntityId entity : registry.View<Transform, RigidBody, HitBox>())
                 {
 
@@ -95,7 +100,7 @@ namespace SymoCraft::Physics
 
                     if (rb.is_sensor)
                     {
-                        // not designed yet
+                        rb.on_ground = false;
                         continue;
                     }
 
@@ -106,150 +111,18 @@ namespace SymoCraft::Physics
         }
 
 
-        static bool DoRayTracing(const glm::vec3 &origin, const glm::vec3 &normal_direction,
-                              float max_distance, bool draw,
-                              const glm::vec3 &block_corner, const glm::vec3& step, RaycastStaticResult* out)
+        RaycastStaticResult RayCastStatic(const glm::vec3 &origin, const glm::vec3 &normal_direction,
+                                          float max_distance, bool /*draw*/)
         {
-            glm::vec3 block_center = block_corner - (glm::vec3(0.5f) * step);
-            int block_id = ChunkManager::GetBlock(block_center).block_id;
-
-            if (block_id != BlockConstants::NULL_BLOCK.block_id && block_id != BlockConstants::AIR_BLOCK.block_id)
-            {
-                HitBox current_box{};
-                current_box.offset = glm::vec3();
-                current_box.size = glm::vec3(1.0f, 1.0f, 1.0f);
-                Transform currentTransform{};
-                currentTransform.position = block_center;
-
-                Block block = ChunkManager::GetBlock(currentTransform.position);
-                BlockFormat blockFormat = get_block(block.block_id);
-
-                if (blockFormat.m_is_solid)
-                {
-                    glm::vec3 min = currentTransform.position - (current_box.size * 0.5f) + current_box.offset;
-                    glm::vec3 max = currentTransform.position + (current_box.size * 0.5f) + current_box.offset;
-                    float t1 = (min.x - origin.x) / (compare(normal_direction.x, 0.0f) ? 0.00001f : normal_direction.x);
-                    float t2 = (max.x - origin.x) / (compare(normal_direction.x, 0.0f) ? 0.00001f : normal_direction.x);
-                    float t3 = (min.y - origin.y) / (compare(normal_direction.y, 0.0f) ? 0.00001f : normal_direction.y);
-                    float t4 = (max.y - origin.y) / (compare(normal_direction.y, 0.0f) ? 0.00001f : normal_direction.y);
-                    float t5 = (min.z - origin.z) / (compare(normal_direction.z, 0.0f) ? 0.00001f : normal_direction.z);
-                    float t6 = (max.z - origin.z) / (compare(normal_direction.z, 0.0f) ? 0.00001f : normal_direction.z);
-
-                    float tmin = glm::max(glm::max(glm::min(t1, t2), glm::min(t3, t4)), glm::min(t5, t6));
-                    float tmax = glm::min(glm::min(glm::max(t1, t2), glm::max(t3, t4)), glm::max(t5, t6));
-                    if (tmax < 0 || tmin > tmax)
-                    {
-                        // No intersection
-                        return false;
-                    }
-
-                    // intersection exists
-                    float depth = 0.0f;
-                    if (tmin < 0.0f)
-                        depth = tmax;
-                    else
-                        depth = tmin;
-
-                    out->point = origin + normal_direction * depth;
-                    out->hit = true;
-                    out->block_center = currentTransform.position + current_box.offset;
-                    out->block_size = current_box.size;
-                    out->hit_normal = out->point - out->block_center;
-                    float max_component = glm::max(glm::abs(out->hit_normal.x), glm::max(glm::abs(out->hit_normal.y), glm::abs(out->hit_normal.z)));
-                    out->hit_normal = glm::abs(out->hit_normal.x) == max_component
-                                      ? glm::vec3(1, 0, 0) * glm::sign(out->hit_normal.x)
-                                      : glm::abs(out->hit_normal.y) == max_component
-                                        ? glm::vec3(0, 1, 0) * glm::sign(out->hit_normal.y)
-                                        : glm::vec3(0, 0, 1) * glm::sign(out->hit_normal.z);
-                    return true;
-                }
-            }
-
-            return false;
-        }
-        // Ray casting from player on the block
-
-
-        RaycastStaticResult RayCastStatic(const glm::vec3 &origin, const glm::vec3 &normal_direction
-                , float max_distance, bool draw)
-        {
+            const auto hit = PlayerMath::RaycastVoxels(origin, normal_direction, max_distance, IsSolidVoxel);
             RaycastStaticResult result{};
-            result.hit = false;
-
-            if (compare(normal_direction, glm::vec3(0, 0, 0)))
-            {
-                // invalid normal direction, return null result
+            if (!hit.hit)
                 return result;
-            }
-
-            /*
-			if (draw)
-			{
-				Renderer::drawLine(origin, origin + normal_direction * max_distance,);
-			}
-            */
-            // NOTE: the reference paper: http://www.cse.yorku.ca/~amana/research/grid.pdf
-            glm::vec3 rayEnd = origin + normal_direction * max_distance;
-
-            // Do some fancy math to figure out which voxel is the next voxel
-            glm::vec3 block_center = glm::ceil(origin);
-            // step is the sign of normal direction
-            glm::vec3 step = glm::sign(normal_direction);
-            // Max amount we can step in any direction of the ray, and remain in the voxel
-            glm::vec3 block_center_to_origin_sign = glm::sign(block_center - origin);
-            glm::vec3 revised_normal_direction = glm::vec3(
-                    normal_direction.x == 0.0f ? 1e-10 * block_center_to_origin_sign.x : normal_direction.x,
-                    normal_direction.y == 0.0f ? 1e-10 * block_center_to_origin_sign.y : normal_direction.y,
-                    normal_direction.z == 0.0f ? 1e-10 * block_center_to_origin_sign.z : normal_direction.z);
-            glm::vec3 t_delta = ((block_center + step) - origin) / revised_normal_direction;
-            // If any number is 0, then we max the delta so that we don't get a false positive
-            if (t_delta.x == 0.0f) t_delta.x = 1e10;
-            if (t_delta.y == 0.0f) t_delta.y = 1e10;
-            if (t_delta.z == 0.0f) t_delta.z = 1e10;
-            glm::vec3 t_max = t_delta;
-            float min_t_value;
-            do
-            {
-                t_delta = (block_center - origin) / revised_normal_direction;
-                t_max = t_delta;
-                min_t_value = FLT_MAX;
-                if (t_max.x < t_max.y)
-                {
-                    if (t_max.x < t_max.z)
-                    {
-                        block_center.x += step.x;
-                        // Check if we actually hit the block
-                        if (DoRayTracing(origin, normal_direction, max_distance, draw, block_center, step, &result))
-                            return result;
-                        min_t_value = t_max.x;
-                    }
-                    else
-                    {
-                        block_center.z += step.z;
-                        if (DoRayTracing(origin, normal_direction, max_distance, draw, block_center, step, &result))
-                            return result;
-                        min_t_value = t_max.z;
-                    }
-                }
-                else
-                {
-                    if (t_max.y < t_max.z)
-                    {
-                        block_center.y += step.y;
-                        if (DoRayTracing(origin, normal_direction, max_distance, draw, block_center, step, &result))
-                            return result;
-                        min_t_value = t_max.y;
-                    }
-                    else
-                    {
-                        block_center.z += step.z;
-                        if (DoRayTracing(origin, normal_direction, max_distance, draw, block_center, step, &result))
-                            return result;
-                        min_t_value = t_max.z;
-                    }
-                }
-            } while (min_t_value < max_distance);
-
+            result.hit = true;
+            result.block_center = glm::vec3(hit.cell) + glm::vec3(0.5f);
+            result.block_size = glm::vec3(1.0f);
+            result.hit_normal = hit.normal;
+            result.point = origin + glm::normalize(normal_direction) * hit.distance;
             return result;
         }
 
@@ -260,17 +133,20 @@ namespace SymoCraft::Physics
         // Parameters: entity id, rigid body, transform, hit box
         static void ResolveStaticCollision(ECS::EntityId entity, RigidBody &rb, Transform &transform, HitBox &hit_box)
         {
+            rb.on_ground = false;
+            const glm::vec3 center = transform.position + hit_box.offset;
             // Get all face coordinate of the hit box
             // ceil : return the nearest integer >= expression
-            auto right_x = (int32) glm::ceil(transform.position.x + hit_box.size.x * 0.5f);
-            auto left_x = (int32) glm::ceil(transform.position.x - hit_box.size.x * 0.5f);
-            auto front_z = (int32) glm::ceil(transform.position.z + hit_box.size.z * 0.5f);
-            auto back_z = (int32) glm::ceil(transform.position.z - hit_box.size.z * 0.5f);
-            auto top_y = (int32) glm::ceil(transform.position.y + hit_box.size.y * 0.5f) ;
-            auto bottom_y = (int32) glm::ceil(transform.position.y - hit_box.size.y * 0.5f);
+            auto right_x = (int32) glm::ceil(center.x + hit_box.size.x * 0.5f);
+            auto left_x = (int32) glm::ceil(center.x - hit_box.size.x * 0.5f);
+            auto front_z = (int32) glm::ceil(center.z + hit_box.size.z * 0.5f);
+            auto back_z = (int32) glm::ceil(center.z - hit_box.size.z * 0.5f);
+            auto top_y = (int32) glm::ceil(center.y + hit_box.size.y * 0.5f) ;
+            auto bottom_y = (int32) glm::ceil(center.y - hit_box.size.y * 0.5f);
 
             HitBox default_block_box{};
             default_block_box.size = glm::vec3(1.0f, 1.0f, 1.0f);
+            default_block_box.offset = glm::vec3(0.0f);
             Transform block_transform{};
             block_transform.front = glm::vec3(1, 0, 0);
             block_transform.up = glm::vec3(0, 1, 0);
@@ -279,7 +155,6 @@ namespace SymoCraft::Physics
             block_transform.pitch = 0;
             block_transform.scale = glm::vec3(1, 1, 1);
 
-            bool did_collision = false;
             for (int32 y = top_y; y >= bottom_y; y--)
                 for  (int32 x = left_x; x <= right_x; x++)
                     for (int32 z = back_z; z <= front_z; z++)
@@ -295,7 +170,7 @@ namespace SymoCraft::Physics
                             CollisionInfo collision_info
                             = StaticCollisionInformation(rb, hit_box, transform, default_block_box, block_transform);
 
-                            float dot_product = glm::dot(glm::normalize(collision_info.overlap_part), glm::normalize(rb.velocity));
+                            float dot_product = glm::dot(collision_info.overlap_part, rb.velocity);
                             if (dot_product < 0)
                             {
                                 // We're already moving out of the collision, don't do anything
@@ -323,91 +198,24 @@ namespace SymoCraft::Physics
                                     break;
                             }
                             rb.on_ground = rb.on_ground || collision_info.force == Direction::BOTTOM;
-                            did_collision = true;
                         }
                     }
 
-            if (!did_collision && rb.on_ground && rb.velocity.y > 0)
+            if (rb.velocity.y <= 0.0f && HasGroundSupport(transform, hit_box))
             {
-                // If we're not colliding with any object it's impossible to be on the ground
-                rb.on_ground = false;
+                rb.on_ground = true;
+                rb.velocity.y = 0.0f;
+                rb.acceleration.y = 0.0f;
             }
         }
 
-        static bool IsColliding(const HitBox &hb1, const Transform &tr1
-                , const HitBox &hb2, const Transform &tr2)
+        static bool IsColliding(const HitBox &hb1, const Transform &tr1,
+                                const HitBox &hb2, const Transform &tr2)
         {
-            glm::vec3 test_axes[3] = {
-                    glm::vec3(1, 0, 0),
-                    glm::vec3(0, 1, 0),
-                    glm::vec3(0, 0, 1) };
-
-            // negative axis face's position
-            glm::vec3 hb1_negative = tr1.position - (hb1.size * 0.5f);
-            glm::vec3 hb2_negative = tr2.position - (hb2.size * 0.5f);
-
-            // positive axis face's position
-            glm::vec3 hb1_positive = tr1.position + (hb1.size * 0.5f);
-            glm::vec3 hb2_positive = tr2.position + (hb2.size * 0.5f);
-
-            // check each face if there is an overlapping
-
-            /*for (int i = 0; i < 3; i++)
-            {
-                float f1_positive = glm::dot(hb1_positive, test_axes[i]);
-                float f2_negative = glm::dot(hb2_negative, test_axes[i]);
-                if (f2_negative - f1_positive <= 0.001f)
-                    return true;
-
-                float f1_negative = glm::dot(hb1_negative, test_axes[i]);
-                float f2_positive = glm::dot(hb2_positive, test_axes[i]);
-                if (f1_negative - f2_positive <= 0.001f)
-                    return true;
-            }
-            return false;
-            */
-
-            for (auto test_axe : test_axes)
-            {
-                float penetration = PenetrationAmount(hb1_negative, hb1_positive
-                                                      , hb2_negative, hb2_positive
-                                                      , test_axe);
-                if (glm::abs(penetration) <= 0.001f)
-                    return false;
-            }
-            return true;
-        }
-
-        static float PenetrationAmount(const glm::vec3 &hb1_negative, const glm::vec3 &hb1_positive
-                                    ,const glm::vec3 &hb2_negative, const glm::vec3 &hb2_positive
-                                    , const glm::vec3 &axis)
-        {
-            if (axis == glm::vec3(1, 0, 0))
-            {
-                if ((hb2_negative.x <= hb1_positive.x) && (hb1_negative.x <= hb2_positive.x))
-                {
-                    // We have penetration
-                    return hb2_negative.x - hb1_positive.x;
-                }
-            }
-            else if (axis == glm::vec3(0, 1, 0))
-            {
-                if ((hb2_negative.y <= hb1_positive.y) && (hb1_negative.y <= hb2_positive.y))
-                {
-                    // We have penetration
-                    return hb2_positive.y - hb1_negative.y;
-                }
-            }
-            else if (axis == glm::vec3(0, 0, 1))
-            {
-                if ((hb2_negative.z <= hb1_positive.z) && (hb1_negative.z <= hb2_positive.z))
-                {
-                    // We have penetration
-                    return hb2_negative.z - hb1_positive.z;
-                }
-            }
-
-            return 0.0f;
+            const glm::vec3 center1 = tr1.position + hb1.offset;
+            const glm::vec3 center2 = tr2.position + hb2.offset;
+            return PlayerMath::Overlaps(center1 - hb1.size * 0.5f, center1 + hb1.size * 0.5f,
+                                        center2 - hb2.size * 0.5f, center2 + hb2.size * 0.5f);
         }
 
 
@@ -421,47 +229,47 @@ namespace SymoCraft::Physics
             hb2_expanded.size += hb1.size;
 
             // Figure out which quadrant the collision is and resolve it
-            glm::vec3 hb1_to_hb2 = tr1.position - tr2.position;
+            glm::vec3 hb1_to_hb2 = tr1.position + hb1.offset - tr2.position - hb2.offset;
 
             if (hb1_to_hb2.x > 0 && hb1_to_hb2.y > 0 && hb1_to_hb2.z > 0)
             {
                 // We are in the top-right-front quadrant
-                GetQuadrantResult(tr1, tr2, hb2_expanded, &res, Direction::LEFT, Direction::BOTTOM, Direction::BACK);
+                GetQuadrantResult(tr1, tr2, hb1, hb2_expanded, &res, Direction::LEFT, Direction::BOTTOM, Direction::BACK);
             }
             else if (hb1_to_hb2.x > 0 && hb1_to_hb2.y > 0 && hb1_to_hb2.z <= 0)
             {
                 // We are in the top-right-back quadrant
-                GetQuadrantResult(tr1, tr2, hb2_expanded, &res, Direction::LEFT, Direction::BOTTOM, Direction::FRONT);
+                GetQuadrantResult(tr1, tr2, hb1, hb2_expanded, &res, Direction::LEFT, Direction::BOTTOM, Direction::FRONT);
             }
             else if (hb1_to_hb2.x > 0 && hb1_to_hb2.y <= 0 && hb1_to_hb2.z > 0)
             {
                 // We are in the bottom-right-front quadrant
-                GetQuadrantResult(tr1, tr2, hb2_expanded, &res, Direction::LEFT, Direction::TOP, Direction::BACK);
+                GetQuadrantResult(tr1, tr2, hb1, hb2_expanded, &res, Direction::LEFT, Direction::TOP, Direction::BACK);
             }
             else if (hb1_to_hb2.x > 0 && hb1_to_hb2.y <= 0 && hb1_to_hb2.z <= 0)
             {
                 // We are in the bottom-right-back quadrant
-                GetQuadrantResult(tr1, tr2, hb2_expanded, &res, Direction::LEFT, Direction::TOP, Direction::FRONT);
+                GetQuadrantResult(tr1, tr2, hb1, hb2_expanded, &res, Direction::LEFT, Direction::TOP, Direction::FRONT);
             }
             else if (hb1_to_hb2.x <= 0 && hb1_to_hb2.y > 0 && hb1_to_hb2.z > 0)
             {
                 // We are in the top-left-front quadrant
-                GetQuadrantResult(tr1, tr2, hb2_expanded, &res, Direction::RIGHT, Direction::BOTTOM, Direction::BACK);
+                GetQuadrantResult(tr1, tr2, hb1, hb2_expanded, &res, Direction::RIGHT, Direction::BOTTOM, Direction::BACK);
             }
             else if (hb1_to_hb2.x <= 0 && hb1_to_hb2.y > 0 && hb1_to_hb2.z <= 0)
             {
                 // We are in the top-left-back quadrant
-                GetQuadrantResult(tr1, tr2, hb2_expanded, &res, Direction::RIGHT, Direction::BOTTOM, Direction::FRONT);
+                GetQuadrantResult(tr1, tr2, hb1, hb2_expanded, &res, Direction::RIGHT, Direction::BOTTOM, Direction::FRONT);
             }
             else if (hb1_to_hb2.x <= 0 && hb1_to_hb2.y <= 0 && hb1_to_hb2.z > 0)
             {
                 // We are in the bottom-left-front quadrant
-                GetQuadrantResult(tr1, tr2, hb2_expanded, &res, Direction::RIGHT, Direction::TOP, Direction::BACK);
+                GetQuadrantResult(tr1, tr2, hb1, hb2_expanded, &res, Direction::RIGHT, Direction::TOP, Direction::BACK);
             }
             else if (hb1_to_hb2.x <= 0 && hb1_to_hb2.y <= 0 && hb1_to_hb2.z <= 0)
             {
                 // We are in the bottom-left-back quadrant
-                GetQuadrantResult(tr1, tr2, hb2_expanded, &res, Direction::RIGHT, Direction::TOP, Direction::FRONT);
+                GetQuadrantResult(tr1, tr2, hb1, hb2_expanded, &res, Direction::RIGHT, Direction::TOP, Direction::FRONT);
             }
             else
             {
@@ -493,7 +301,7 @@ namespace SymoCraft::Physics
             return 0.0001f;
         }
 
-        static void GetQuadrantResult(const Transform &tr1, const Transform &tr2, const HitBox &hb2_expanded
+        static void GetQuadrantResult(const Transform &tr1, const Transform &tr2, const HitBox &hb1, const HitBox &hb2_expanded
                 , CollisionInfo* res ,Direction x_face, Direction y_face, Direction z_face)
         {
             float x_direction = GetDirection(x_face);
@@ -505,8 +313,8 @@ namespace SymoCraft::Physics
                     hb2_expanded.size.y * y_direction,
                     hb2_expanded.size.z * z_direction
             };
-            glm::vec3 quadrant = (hb2_expanded_size_by_direction * 0.5f) + tr2.position;
-            glm::vec3 delta = tr1.position - quadrant;
+            glm::vec3 quadrant = (hb2_expanded_size_by_direction * 0.5f) + tr2.position + hb2_expanded.offset;
+            glm::vec3 delta = tr1.position + hb1.offset - quadrant;
             glm::vec3 abs_delta = glm::abs(delta);
 
             if (abs_delta.x < abs_delta.y && abs_delta.x < abs_delta.z)

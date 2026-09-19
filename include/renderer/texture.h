@@ -8,9 +8,17 @@ using layer_t = int;
 class Texture
 {
 public:
-    Texture CreateRegularTexture(std::string_view filepath, bool pixelated);
+    Texture() = default;
+    ~Texture();
+    Texture(const Texture&) = delete;
+    Texture& operator=(const Texture&) = delete;
+    Texture(Texture&& other) noexcept;
+    Texture& operator=(Texture&& other) noexcept;
 
-    std::string_view m_filepath;
+    Texture CreateRegularTexture(std::string_view filepath, bool pixelated);
+    void Destroy() noexcept;
+
+    std::string m_filepath;
     int m_width{};
     int m_height{};
     int m_channel_amount{};

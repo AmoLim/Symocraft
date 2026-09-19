@@ -1,8 +1,10 @@
 #include "renderer/renderer.h"
 #include "core/application.h"
+#include "core/asset_paths.h"
 #include "core/window.h"
 #include "world/block.h"
 #include "core/constants.h"
+#include <stdexcept>
 
 namespace SymoCraft{
     Batch<BlockVertex3D> chunk_batch;
@@ -23,23 +25,30 @@ namespace SymoCraft{
         constexpr std::array<float, 4> clear_color = {0.529f, 0.808f, 0.922f, 1.0f};
 
         // Internal functions
-        static void GLAPIENTRY messageCallback(GLenum source, GLenum type, GLuint id, GLenum severity,
-                                               GLsizei length, const GLchar *message, const void *userParam);
+#ifndef NDEBUG
+        static void GLAPIENTRY messageCallback(GLenum, GLenum type, GLuint id, GLenum severity,
+                                               GLsizei, const GLchar *message, const void*)
+        {
+            std::fprintf(stderr, "OpenGL diagnostic [type=0x%x severity=0x%x id=%u]: %s\n",
+                         type, severity, id, message ? message : "no message");
+        }
+#endif
 
         void Init() {
-            Window &window = Application::GetWindow();
+            if (!glfwGetCurrentContext() || !glad_glCreateBuffers)
+                throw std::runtime_error("Renderer initialization requires a loaded OpenGL context");
             camera = Application::GetCamera();
 
-            // Load OpenGL functions using Glad
-            if (!gladLoadGLLoader((GLADloadproc) glfwGetProcAddress)) {
-                AmoLogger_Error("Failed to initialize glad.\n");
-                return;
+#ifndef NDEBUG
+            if (glDebugMessageCallback)
+            {
+                glEnable(GL_DEBUG_OUTPUT);
+                glEnable(GL_DEBUG_OUTPUT_SYNCHRONOUS);
+                glDebugMessageCallback(messageCallback, nullptr);
+                glDebugMessageControl(GL_DONT_CARE, GL_DONT_CARE, GL_DEBUG_SEVERITY_NOTIFICATION,
+                                      0, nullptr, GL_FALSE);
             }
-            std::cout << "GLAD initialized.\n";
-            std::cout << "Hello OpenGL " << GLVersion.major << '.' << GLVersion.minor << '\n';
-
-            // glEnable(GL_DEBUG_OUTPUT);
-            // glDebugMessageCallback(messageCallback, 0);
+#endif
 
             // Enable render parameters
             glEnable(GL_DEPTH_TEST);
@@ -52,11 +61,11 @@ namespace SymoCraft{
             line_batch.SetPrimitiveType(GL_LINES);
             line_batch.SetBatchSize(100);
             // Initialize shaders
-            block_shader.CompileAndLink("../assets/shaders/vs_BlockShader.glsl",
-                                        "../assets/shaders/fs_BlockShader.glsl");
+            block_shader.CompileAndLink(Assets::Resolve("shaders/vs_BlockShader.glsl").string(),
+                                        Assets::Resolve("shaders/fs_BlockShader.glsl").string());
 
-            line3D_shader.CompileAndLink("../assets/shaders/vs_FrameShader.glsl",
-                                         "../assets/shaders/fs_FrameShader.glsl");
+            line3D_shader.CompileAndLink(Assets::Resolve("shaders/vs_FrameShader.glsl").string(),
+                                         Assets::Resolve("shaders/fs_FrameShader.glsl").string());
 
             // Initialize batches
             chunk_batch.Init({
@@ -65,16 +74,29 @@ namespace SymoCraft{
                                      {2, 1, GL_FLOAT, offsetof(BlockVertex3D, normal   )}});
 
             line_batch.Init({
-                                    {0, 3,   GL_INT, offsetof(BlockVertex3D, pos_coord)}});
+                                    {0, 3, GL_FLOAT, offsetof(LineVertex3D, pos_coord)}});
 
 
-            LoadBlocks("../assets/configs/blockFormats.yaml");
+            try
+            {
+                LoadBlocks(Assets::Resolve("configs/blockFormats.yaml").string());
+            }
+            catch (const std::exception& error)
+            {
+                throw std::runtime_error(std::string("Failed to load block configuration: ") + error.what());
+            }
         }
 
         void Free() {
             chunk_batch.Free();
             line_batch.Free();
             block_shader.Destroy();
+            line3D_shader.Destroy();
+            camera = nullptr;
+#ifndef NDEBUG
+            if (glfwGetCurrentContext() && glDebugMessageCallback)
+                glDebugMessageCallback(nullptr, nullptr);
+#endif
         }
 
         void Render() {
@@ -87,10 +109,10 @@ namespace SymoCraft{
             block_shader.Destroy();
             line3D_shader.Destroy();
 
-            block_shader.CompileAndLink("assets/shaders/vs_BlockShader.glsl",
-                                        "assets/shaders/fs_BlockShader.glsl");
-            line3D_shader.CompileAndLink("../assets/shaders/vs_FrameShader.glsl",
-                                         "../assets/shaders/fs_FrameShader.glsl");
+            block_shader.CompileAndLink(Assets::Resolve("shaders/vs_BlockShader.glsl").string(),
+                                        Assets::Resolve("shaders/fs_BlockShader.glsl").string());
+            line3D_shader.CompileAndLink(Assets::Resolve("shaders/vs_FrameShader.glsl").string(),
+                                         Assets::Resolve("shaders/fs_FrameShader.glsl").string());
         }
 
         void DrawBatches3D() {
@@ -132,14 +154,15 @@ namespace SymoCraft{
         // =========================================================
 
         static std::array<LineVertex3D, 24> frame_vertices{}; // Each block contains 6 faces, which contains 4 vertices
-        static uint16 index;
-        static glm::mat4 scale_mat = glm::scale(scale_mat, glm::vec3(1.2, 1.2, 1.2));
 
         // Generate render data for the ray cast block
         void GenerateBlockFrameData(const glm::vec3 &block_center_coord) {
-            glm::ivec3 adjusted_coord = glm::floor(block_center_coord);
-            for (index = 0; auto &vertex: frame_vertices) {
-                vertex.pos_coord = scale_mat * glm::vec4(adjusted_coord + BlockConstants::pos_coords[BlockConstants::frame_indices[index]], 1.0f);
+            const glm::vec3 center = glm::floor(block_center_coord) + glm::vec3(0.5f);
+            size_t index = 0;
+            for (auto &vertex: frame_vertices) {
+                // Expand around this block's center, not around the world origin.
+                const glm::vec3 corner = BlockConstants::pos_coords[BlockConstants::frame_indices[index]];
+                vertex.pos_coord = center + (corner - glm::vec3(0.5f)) * 1.004f;
                 line_batch.AddVertex(vertex);
                 index++;
             }

@@ -1,6 +1,9 @@
 #pragma once
 #include "core.h"
 #include "world/world.h"
+#include <limits>
+#include <stdexcept>
+#include <type_traits>
 
 namespace SymoCraft{
 
@@ -25,7 +28,7 @@ namespace SymoCraft{
     };
 
     struct LineVertex3D{
-        glm::ivec3 pos_coord;
+        glm::vec3 pos_coord;
     };
 
     struct VertexAttribute{
@@ -37,93 +40,81 @@ namespace SymoCraft{
 
     struct DrawArraysIndirectCommand
     {
-        uint16  count;
-        uint16  instanceCount;
-        uint16  first;
-        uint16  baseInstance;
+        uint32 count{};
+        uint32 instanceCount{};
+        uint32 first{};
+        uint32 baseInstance{};
     };
 
     template<typename T>
     class Batch
     {
+        static_assert(std::is_trivially_copyable_v<T>);
     public:
+        Batch() = default;
+        Batch(const Batch&) = delete;
+        Batch& operator=(const Batch&) = delete;
+        Batch(Batch&&) = delete;
+        Batch& operator=(Batch&&) = delete;
+        ~Batch() { Free(); }
+
+        static constexpr bool CanAppend(std::size_t count, std::size_t amount, std::size_t capacity) noexcept
+        {
+            return count <= capacity && amount <= capacity - count;
+        }
+
         void Init(std::initializer_list<VertexAttribute> vertex_attributes)
         {
-            m_data_size = sizeof(T) * m_batch_size;
-            data = (T*)AmoMemory_Allocate(m_data_size);
-            m_vertex_count = 0;
-
-            // Create buffers
+            ValidateCapacity(m_batch_size);
+            Free();
+            const auto data_size = static_cast<GLsizeiptr>(sizeof(T) * m_batch_size);
             glCreateBuffers(1, &m_vertex_data_vbo);
-//            glCreateBuffers(1, &m_draw_command_vbo);
             glCreateVertexArrays(1, &m_vao);
+            if (!m_vertex_data_vbo || !m_vao)
+                throw std::runtime_error("Failed to create batch OpenGL objects.");
 
-            // Allocate memory for the VBO, and bind the buffers
-            glNamedBufferStorage(m_vertex_data_vbo, m_data_size, nullptr, GL_DYNAMIC_STORAGE_BIT);
-//            glNamedBufferStorage(m_draw_command_vbo, World::chunk_radius * World::chunk_radius, nullptr, GL_DYNAMIC_DRAW);
-            glVertexArrayVertexBuffer(m_vao, 0, m_vertex_data_vbo, 0, sizeof(BlockVertex3D));
+            glNamedBufferStorage(m_vertex_data_vbo, data_size, nullptr, GL_DYNAMIC_STORAGE_BIT);
+            GLint64 allocated_size = 0;
+            glGetNamedBufferParameteri64v(m_vertex_data_vbo, GL_BUFFER_SIZE, &allocated_size);
+            if (allocated_size != data_size)
+                throw std::runtime_error("Failed to allocate batch vertex buffer storage.");
+            glVertexArrayVertexBuffer(m_vao, 0, m_vertex_data_vbo, 0, static_cast<GLsizei>(sizeof(T)));
 
-
-            // Configure vertex attributes
-            // Draw float data solely for now
-            // Add support for other data in the future
             for (const auto& attribute : vertex_attributes)
             {
                 glEnableVertexArrayAttrib(m_vao, attribute.attribute_slot);
                 glVertexArrayAttribFormat(m_vao, attribute.attribute_slot, attribute.element_amount, attribute.data_type, GL_FALSE, attribute.offset);
                 glVertexArrayAttribBinding(m_vao, attribute.attribute_slot, 0);
             }
-
+            m_initialized = true;
         }
 
         void AddVertex(const T& vertex)
         {
-            if(!data)
-                AmoLogger_Error("Invalid batch.\n");
-            if (!HasRoom())
-            {
-                AmoLogger_Error("Batch ran out of room. I have %d/%d vertices.\n", m_vertex_count, m_batch_size);
-                return;
-            }
-            if (m_vertex_count < 0)
-            {
-                AmoLogger_Error("Invalid vertex number.\n");
-                return;
-            }
-
-            data[m_vertex_count] = vertex;
-            m_vertex_count++;
+            RequireRoom(1);
+            data.push_back(vertex);
+            m_dirty = true;
         }
 
-        void AddVertex(const T* vertex, uint32 vertex_amount)
+        void AddVertex(const T* vertex, std::size_t vertex_amount)
         {
-            if(!data)
-                AmoLogger_Error("Invalid batch.\n");
-            if (!HasRoom())
-            {
-                AmoLogger_Error("Batch ran out of room. I have %d/%d vertices.\n", m_vertex_count, m_batch_size);
+            RequireRoom(vertex_amount);
+            if (vertex_amount == 0)
                 return;
-            }
-            if (m_vertex_count < 0)
-            {
-                AmoLogger_Error("Invalid vertex number.\n");
-                return;
-            }
-
-            glNamedBufferSubData(m_vertex_data_vbo, m_vertex_count * sizeof(BlockVertex3D), vertex_amount * sizeof(BlockVertex3D), vertex);
-            m_vertex_count += vertex_amount;
+            if (!vertex)
+                throw std::invalid_argument("Cannot append a null vertex range.");
+            data.insert(data.end(), vertex, vertex + vertex_amount);
+            m_dirty = true;
         }
 
         void Draw()  //Draw vertices
         {
-//            if (m_vertex_count <= 0)
-//            {
-//                std::cerr << "No vertices to draw.\n";
-//                return;
-//            }
-
+            RequireInitialized();
+            if (data.empty())
+                return;
+            ReloadData();
             glBindVertexArray(m_vao);
-            glDrawArrays(m_primitive_type, 0, m_vertex_count);
+            glDrawArrays(m_primitive_type, 0, static_cast<GLsizei>(data.size()));
             glBindVertexArray(0);
 
             Clear();
@@ -131,22 +122,30 @@ namespace SymoCraft{
 
         inline void ReloadData()
         {
-            glNamedBufferSubData(m_vertex_data_vbo, 0, m_data_size, data);
+            RequireInitialized();
+            if (m_dirty && !data.empty())
+                glNamedBufferSubData(m_vertex_data_vbo, 0,
+                    static_cast<GLsizeiptr>(data.size() * sizeof(T)), data.data());
+            m_dirty = false;
         }
 
         inline void Clear()
         {
-            m_vertex_count = 0;
+            data.clear();
+            m_dirty = false;
         }
 
-        inline void Free()
+        inline void Free() noexcept
         {
-            if (data)
-            {
-                AmoMemory_Free(data);
-                data = nullptr;
-                m_data_size = 0;
-            }
+            if (m_vertex_data_vbo)
+                glDeleteBuffers(1, &m_vertex_data_vbo);
+            if (m_vao)
+                glDeleteVertexArrays(1, &m_vao);
+            m_vertex_data_vbo = 0;
+            m_vao = 0;
+            std::vector<T>().swap(data);
+            m_initialized = false;
+            m_dirty = false;
         }
 
         inline void SetPrimitiveType(const GLenum primitive_type)
@@ -154,24 +153,43 @@ namespace SymoCraft{
             m_primitive_type = primitive_type;
         }
 
-        inline void SetBatchSize(const uint32 new_batch_size)
+        inline void SetBatchSize(const std::size_t new_batch_size)
         {
+            if (m_vertex_data_vbo || m_vao)
+                throw std::logic_error("Free the batch before changing its capacity.");
+            ValidateCapacity(new_batch_size);
             m_batch_size = new_batch_size;
         }
 
-    private:
-        uint32 m_vao;
-        uint32 m_vertex_data_vbo;
-        uint32 m_draw_command_vbo;
-        uint32 m_data_size;
-        uint32 m_vertex_count;
-        uint32 m_batch_size{10000000};
-        GLenum m_primitive_type{GL_TRIANGLES};
-        T* data;
+        std::size_t VertexCount() const noexcept { return data.size(); }
 
-        inline bool HasRoom() const
+    private:
+        uint32 m_vao{};
+        uint32 m_vertex_data_vbo{};
+        std::size_t m_batch_size{10000000};
+        GLenum m_primitive_type{GL_TRIANGLES};
+        std::vector<T> data;
+        bool m_initialized{};
+        bool m_dirty{};
+
+        static void ValidateCapacity(std::size_t capacity)
         {
-            return m_vertex_count <= m_batch_size;
+            if (capacity == 0 || capacity > static_cast<std::size_t>((std::numeric_limits<GLsizei>::max)()) ||
+                capacity > static_cast<std::size_t>((std::numeric_limits<GLsizeiptr>::max)()) / sizeof(T))
+                throw std::length_error("Batch capacity exceeds OpenGL count or buffer size limits.");
+        }
+
+        void RequireInitialized() const
+        {
+            if (!m_initialized)
+                throw std::logic_error("Batch is not initialized.");
+        }
+
+        void RequireRoom(std::size_t amount) const
+        {
+            RequireInitialized();
+            if (!CanAppend(data.size(), amount, m_batch_size))
+                throw std::length_error("Batch vertex capacity exceeded before append.");
         }
     };
 

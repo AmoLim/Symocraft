@@ -20,6 +20,8 @@ namespace SymoCraft
         entity_id = registry.CreateEntity();
         registry.AddComponent<Transform>(entity_id);
         Transform &transform = registry.GetComponent<Transform>(entity_id);
+        transform = {};
+        transform.scale = glm::vec3(1.0f);
         transform.yaw = -90.0f;   // yaw is initialized to -90.0 degrees since a yaw of 0.0 results
         // in a direction vector pointing to the right,
         // so we initially rotate a bit to the left.
