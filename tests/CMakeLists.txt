@@ -23,6 +23,12 @@ add_test(NAME assets.game_package
         -P "${CMAKE_CURRENT_SOURCE_DIR}/CheckAssetPackage.cmake")
 set_tests_properties(assets.game_package PROPERTIES TIMEOUT 45)
 
+add_executable(shader_loading_tests shader_loading_tests.cpp
+    ../src/renderer/shader.cpp
+    ../src/renderer/shader_program.cpp)
+target_link_libraries(shader_loading_tests PRIVATE symocraft_glad glm::glm symocraft_vendor_headers glfw)
+file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/empty-shader.glsl" CONTENT "")
+
 add_executable(player_math_tests player_math_tests.cpp)
 target_link_libraries(player_math_tests PRIVATE glm::glm)
 
@@ -40,16 +46,20 @@ target_link_libraries(block_config_tests PRIVATE symocraft_yaml glm::glm symocra
 
 add_executable(key_snapshot_tests key_snapshot_tests.cpp)
 
-foreach(test_target IN ITEMS player_math_tests batch_safety_tests mesh_safety_tests block_config_tests key_snapshot_tests)
+foreach(test_target IN ITEMS shader_loading_tests player_math_tests batch_safety_tests mesh_safety_tests block_config_tests key_snapshot_tests)
     target_include_directories(${test_target} PRIVATE "${PROJECT_SOURCE_DIR}/include")
     target_compile_features(${test_target} PRIVATE cxx_std_20)
     target_compile_options(${test_target} PRIVATE /W4 /utf-8)
     set_target_properties(${test_target} PROPERTIES CXX_EXTENSIONS OFF)
 endforeach()
 
+add_test(NAME renderer.shader_loading COMMAND shader_loading_tests
+    "${PROJECT_SOURCE_DIR}/assets/shaders/vs_BlockShader.glsl"
+    "${PROJECT_SOURCE_DIR}/assets/shaders/fs_BlockShader.glsl"
+    "${CMAKE_CURRENT_BINARY_DIR}/empty-shader.glsl")
 add_test(NAME player.math COMMAND player_math_tests)
 add_test(NAME renderer.batch_safety COMMAND batch_safety_tests)
 add_test(NAME world.mesh_safety COMMAND mesh_safety_tests)
 add_test(NAME world.block_config COMMAND block_config_tests "${PROJECT_SOURCE_DIR}/assets/configs/blockFormats.yaml")
 add_test(NAME input.key_snapshot COMMAND key_snapshot_tests)
-set_tests_properties(player.math renderer.batch_safety world.mesh_safety world.block_config input.key_snapshot PROPERTIES TIMEOUT 45)
+set_tests_properties(renderer.shader_loading player.math renderer.batch_safety world.mesh_safety world.block_config input.key_snapshot PROPERTIES TIMEOUT 45)

@@ -42,6 +42,23 @@ For CLion, create a Visual Studio toolchain named **Symocraft MSVC**, select
 the amd64/x64 architecture, and enable the `windows-debug` and `windows-release`
 presets. See the [build and CLion guide](docs/development/build-and-clion.md).
 
+## Resource Regression Tests
+
+The asset and shader-loading checks run without an OpenGL context. They cover
+working-directory independence, relocated packages, missing assets, empty or
+unreadable shader files, failure cleanup, and shader-program replacement.
+Shader driver calls are stubbed in the unit test; real GLSL compilation still
+requires the game smoke test on a compatible GPU.
+
+To run these five focused tests (also included in the full suite):
+
+```powershell
+ctest --preset windows-debug -R '^(assets[.]|renderer[.]shader_loading$)' --output-on-failure --no-tests=error
+```
+
+Use `windows-release` to check the Release build. Build the selected preset
+before running CTest so its executable and staged assets are up to date.
+
 ## Run
 
 ```powershell
